@@ -1,23 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { getDb } from "../../db/connection.js";
+import { query } from "../../db/connection.js";
 import { transitionState } from "../../engine/state-machine.js";
 import { appendAuditEvent } from "../../audit/store.js";
 import type { CoordinationRequest } from "../../types/cr.js";
-
-function parseRow(row: Record<string, unknown>): CoordinationRequest {
-  return {
-    ...row,
-    context_package: JSON.parse(row.context_package as string),
-    response_schema: row.response_schema
-      ? JSON.parse(row.response_schema as string)
-      : null,
-    timeout_policy: JSON.parse(row.timeout_policy as string),
-    routing_hints: JSON.parse(row.routing_hints as string),
-    response_data: row.response_data
-      ? JSON.parse(row.response_data as string)
-      : null,
-  } as CoordinationRequest;
-}
 
 export function registerSlackInteractivity(app: FastifyInstance): void {
   app.post("/slack/interactions", async (request, reply) => {
@@ -30,9 +15,7 @@ export function registerSlackInteractivity(app: FastifyInstance): void {
       return reply.code(400).send({ error: "Invalid payload" });
     }
 
-    if (payload.type !== "block_actions") {
-      return reply.code(200).send();
-    }
+    if (payload.type !== "block_actions") return reply.code(200).send();
 
     const action = payload.actions?.[0];
     if (!action) return reply.code(200).send();
@@ -46,27 +29,21 @@ export function registerSlackInteractivity(app: FastifyInstance): void {
       return reply.code(200).send();
     }
 
-    const db = getDb();
-    const row = db
-      .prepare("SELECT * FROM coordination_requests WHERE request_id = ?")
-      .get(requestId) as Record<string, unknown> | undefined;
+    const { rows } = await query<CoordinationRequest>(
+      "SELECT * FROM coordination_requests WHERE request_id = $1",
+      [requestId]
+    );
+    if (!rows[0]) return reply.code(200).send({ text: "Request not found" });
 
-    if (!row) {
-      return reply.code(200).send({ text: "Request not found" });
-    }
-
-    const cr = parseRow(row);
-
+    const cr = rows[0];
     if (cr.state !== "PENDING_RESPONSE") {
-      return reply.code(200).send({
-        text: `Request is already in state: ${cr.state}`,
-      });
+      return reply.code(200).send({ text: `Request is already in state: ${cr.state}` });
     }
 
     const decision = actionId === "hcp_approve" ? "approved" : "rejected";
     const now = new Date().toISOString();
 
-    transitionState({
+    await transitionState({
       request_id: cr.request_id,
       from: "PENDING_RESPONSE",
       to: "RESPONDED",
@@ -80,7 +57,7 @@ export function registerSlackInteractivity(app: FastifyInstance): void {
       },
     });
 
-    appendAuditEvent({
+    await appendAuditEvent({
       request_id: cr.request_id,
       event_type: "SLACK_INTERACTION",
       actor: `slack:${userId}`,
@@ -88,8 +65,6 @@ export function registerSlackInteractivity(app: FastifyInstance): void {
       payload: { action_id: actionId, decision },
     });
 
-    return reply.code(200).send({
-      text: `Request ${decision}. (ID: ${cr.request_id})`,
-    });
+    return reply.code(200).send({ text: `Request ${decision}. (ID: ${cr.request_id})` });
   });
 }

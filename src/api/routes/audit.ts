@@ -3,13 +3,13 @@ import { getAuditTrail } from "../../audit/store.js";
 
 export function registerAuditRoutes(app: FastifyInstance): void {
   app.get("/v1/audit", async (request) => {
-    const query = request.query as Record<string, string | undefined>;
+    const q = request.query as Record<string, string | undefined>;
 
-    const events = getAuditTrail({
-      request_id: query.request_id,
-      event_type: query.event_type,
-      limit: query.limit ? parseInt(query.limit, 10) : undefined,
-      offset: query.offset ? parseInt(query.offset, 10) : undefined,
+    const events = await getAuditTrail({
+      request_id: q.request_id,
+      event_type: q.event_type,
+      limit: q.limit ? parseInt(q.limit, 10) : undefined,
+      offset: q.offset ? parseInt(q.offset, 10) : undefined,
     });
 
     return { events };

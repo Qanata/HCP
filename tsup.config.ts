@@ -18,4 +18,12 @@ export default defineConfig([
     sourcemap: true,
     dts: true,
   },
+  {
+    entry: ["src/mcp-server.ts"],
+    format: ["esm"],
+    target: "node22",
+    outDir: "dist",
+    sourcemap: true,
+    dts: false,
+  },
 ]);

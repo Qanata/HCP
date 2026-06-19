@@ -1,41 +1,37 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import Database from "better-sqlite3";
+import { IMemoryDb, newDb } from "pg-mem";
 import { canTransition, transitionState } from "../../src/engine/state-machine.js";
-import { setDb } from "../../src/db/connection.js";
+import { setPool } from "../../src/db/connection.js";
 import { ensureSchema } from "../../src/db/schema.js";
 import { generateId } from "../../src/utils/ulid.js";
+import type pg from "pg";
 
-let db: Database.Database;
+let memDb: IMemoryDb;
+let pool: pg.Pool;
 
-function setupTestDb() {
-  db = new Database(":memory:");
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  ensureSchema(db);
-
-  setDb(db);
+async function setupTestDb() {
+  memDb = newDb();
+  const adapter = memDb.adapters.createPg();
+  pool = new adapter.Pool() as unknown as pg.Pool;
+  setPool(pool);
+  await ensureSchema(pool);
 }
 
-function insertTestCR(state: string = "SUBMITTED") {
+async function insertTestCR(state: string = "SUBMITTED"): Promise<string> {
   const id = generateId();
   const now = new Date().toISOString();
-  db.prepare(
+  await pool.query(
     `INSERT INTO coordination_requests
      (request_id, agent_id, intent, urgency, state, context_package, timeout_policy, routing_hints, responder_id, submitted_at, updated_at, timeout_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    "test-agent",
-    "APPROVAL",
-    "MEDIUM",
-    state,
-    JSON.stringify({ summary: "Test" }),
-    JSON.stringify({ timeout_seconds: 300, fallback: "FAIL" }),
-    JSON.stringify({ responder_id: "test-responder", channel: "portal" }),
-    "test-responder",
-    now,
-    now,
-    new Date(Date.now() + 300_000).toISOString()
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [
+      id, "test-agent", "APPROVAL", "MEDIUM", state,
+      JSON.stringify({ summary: "Test" }),
+      JSON.stringify({ timeout_seconds: 300, fallback: "FAIL" }),
+      JSON.stringify({ responder_id: "test-responder", channel: "portal" }),
+      "test-responder", now, now,
+      new Date(Date.now() + 300_000).toISOString(),
+    ]
   );
   return id;
 }
@@ -67,18 +63,12 @@ describe("canTransition", () => {
 });
 
 describe("transitionState", () => {
-  beforeEach(() => {
-    setupTestDb();
-  });
+  beforeEach(async () => { await setupTestDb(); });
 
-  afterEach(() => {
-    db?.close();
-  });
+  it("transitions state and writes audit event", async () => {
+    const id = await insertTestCR("SUBMITTED");
 
-  it("transitions state and writes audit event", () => {
-    const id = insertTestCR("SUBMITTED");
-
-    transitionState({
+    await transitionState({
       request_id: id,
       from: "SUBMITTED",
       to: "ROUTING",
@@ -86,51 +76,41 @@ describe("transitionState", () => {
       actor_type: "SYSTEM",
     });
 
-    const row = db
-      .prepare("SELECT state FROM coordination_requests WHERE request_id = ?")
-      .get(id) as { state: string };
-    expect(row.state).toBe("ROUTING");
+    const { rows } = await pool.query<{ state: string }>(
+      "SELECT state FROM coordination_requests WHERE request_id = $1",
+      [id]
+    );
+    expect(rows[0].state).toBe("ROUTING");
 
-    const events = db
-      .prepare("SELECT * FROM audit_events WHERE request_id = ?")
-      .all(id) as Array<{ event_type: string }>;
-    expect(events).toHaveLength(1);
-    expect(events[0].event_type).toBe("CR_ROUTING");
+    const audit = await pool.query<{ event_type: string }>(
+      "SELECT * FROM audit_events WHERE request_id = $1",
+      [id]
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].event_type).toBe("CR_ROUTING");
   });
 
-  it("throws on invalid transition", () => {
-    const id = insertTestCR("SUBMITTED");
+  it("throws on invalid transition", async () => {
+    const id = await insertTestCR("SUBMITTED");
 
-    expect(() =>
-      transitionState({
-        request_id: id,
-        from: "SUBMITTED",
-        to: "DELIVERED",
-        actor: "system",
-        actor_type: "SYSTEM",
-      })
-    ).toThrow("Invalid state transition");
+    await expect(
+      transitionState({ request_id: id, from: "SUBMITTED", to: "DELIVERED", actor: "system", actor_type: "SYSTEM" })
+    ).rejects.toThrow("Invalid state transition");
   });
 
-  it("throws on concurrent state change", () => {
-    const id = insertTestCR("ROUTING"); // Actual state is ROUTING
+  it("throws on concurrent state change", async () => {
+    const id = await insertTestCR("ROUTING");
 
-    expect(() =>
-      transitionState({
-        request_id: id,
-        from: "SUBMITTED", // But we think it's SUBMITTED
-        to: "ROUTING",
-        actor: "system",
-        actor_type: "SYSTEM",
-      })
-    ).toThrow("Failed to transition");
+    await expect(
+      transitionState({ request_id: id, from: "SUBMITTED", to: "ROUTING", actor: "system", actor_type: "SYSTEM" })
+    ).rejects.toThrow("Failed to transition");
   });
 
-  it("applies additional updates", () => {
-    const id = insertTestCR("PENDING_RESPONSE");
+  it("applies additional updates", async () => {
+    const id = await insertTestCR("PENDING_RESPONSE");
     const now = new Date().toISOString();
 
-    transitionState({
+    await transitionState({
       request_id: id,
       from: "PENDING_RESPONSE",
       to: "RESPONDED",
@@ -143,12 +123,12 @@ describe("transitionState", () => {
       },
     });
 
-    const row = db
-      .prepare("SELECT state, response_data, responded_by FROM coordination_requests WHERE request_id = ?")
-      .get(id) as { state: string; response_data: string; responded_by: string };
-
-    expect(row.state).toBe("RESPONDED");
-    expect(JSON.parse(row.response_data)).toEqual({ decision: "approved" });
-    expect(row.responded_by).toBe("test-user");
+    const { rows } = await pool.query<{ state: string; response_data: any; responded_by: string }>(
+      "SELECT state, response_data, responded_by FROM coordination_requests WHERE request_id = $1",
+      [id]
+    );
+    expect(rows[0].state).toBe("RESPONDED");
+    expect(rows[0].response_data).toEqual({ decision: "approved" });
+    expect(rows[0].responded_by).toBe("test-user");
   });
 });

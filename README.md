@@ -45,7 +45,7 @@ Agents currently have no way to request human approval, clarification, or escala
 | Runtime | Node.js (ES2022) |
 | Language | TypeScript (strict mode) |
 | HTTP framework | Fastify 5 |
-| Database | SQLite via better-sqlite3 |
+| Database | PostgreSQL via Neon (serverless) |
 | Validation | zod |
 | IDs | ULID |
 | Build | tsup |
@@ -65,7 +65,7 @@ Agents currently have no way to request human approval, clarification, or escala
                                              |
 +----------------+    REST API     +---------+----------+     Slack API
 |   AI Agent     | -------------> |       HCP Server     | ------------> Slack
-| (NanoClaw etc) | <------------- |   (Fastify + SQLite) | <----------- (interactions)
+| (NanoClaw etc) | <------------- | (Fastify + Postgres) | <----------- (interactions)
 +----------------+    Poll/SSE    +---------+----------+
                                              |
                                     +--------+---------+
@@ -93,6 +93,7 @@ Agents currently have no way to request human approval, clarification, or escala
 
 - Node.js 22+
 - npm 9+
+- A [Neon](https://neon.tech) project (free tier works) — copy the connection string from the Neon dashboard
 
 ### Install & Run
 
@@ -162,11 +163,11 @@ Set via environment variables or a `.env` file. See `.env.example` for defaults.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HCP_PORT` | `3100` | HTTP server port |
-| `HCP_DB_PATH` | `~/.hcp/hcp.db` | SQLite database file path |
+| `DATABASE_URL` | _(required)_ | Neon PostgreSQL connection string (`postgresql://...?sslmode=require`) |
 | `HCP_BASE_URL` | `http://localhost:3100` | Public base URL (used in Slack messages and portal links) |
 | `SLACK_BOT_TOKEN` | _(empty)_ | Slack Bot User OAuth Token (`xoxb-...`). Leave empty to disable Slack. |
 
-The database directory is created automatically if it doesn't exist.
+Get your `DATABASE_URL` from the Neon dashboard → your project → Connection Details. Use the **pooled** connection string for production.
 
 ---
 
@@ -614,14 +615,14 @@ The `agent_id` associated with the key is automatically attached to all CRs crea
 Keys can be revoked by setting `revoked_at` in the database:
 
 ```sql
-UPDATE api_keys SET revoked_at = datetime('now') WHERE agent_id = 'compromised-agent';
+UPDATE api_keys SET revoked_at = NOW() WHERE agent_id = 'compromised-agent';
 ```
 
 ---
 
 ## Database Schema
 
-SQLite with WAL mode, foreign keys enabled, and 5s busy timeout. The database file is created at `~/.hcp/hcp.db` by default.
+PostgreSQL hosted on [Neon](https://neon.tech) (serverless, scale-to-zero). Schema is applied automatically on startup via `ensureSchema()`. Use the pooled connection string in production.
 
 ### Tables
 
@@ -777,8 +778,8 @@ HCP/
     index.ts                          # Entry point: server + timeout scheduler
     config.ts                         # Env var loading with defaults
     db/
-      connection.ts                   # SQLite singleton (~/.hcp/hcp.db)
-      schema.ts                       # Table definitions + versioning
+      connection.ts                   # Neon/postgres connection pool (DATABASE_URL)
+      schema.ts                       # Table definitions + migrations
     types/
       common.ts                       # Intent, Urgency, State, Fallback enums
       cr.ts                           # CR interfaces + zod schemas
@@ -849,6 +850,56 @@ tsup produces two entry points:
 - `dist/sdk/index.js` — SDK for agent-side consumption (importable as `hcp/sdk`)
 
 Both include source maps and TypeScript declaration files.
+
+---
+
+## AWS Deployment
+
+Production target is **ECS Fargate + Neon** (~$32–52/mo).
+
+```
+Route 53 → ACM → ALB → ECS Fargate (hcp service)
+                              │
+                    ┌─────────┴─────────┐
+               Secrets Manager      Neon (Postgres)
+          SLACK_BOT_TOKEN, etc.   DATABASE_URL (pooled)
+```
+
+### Environment (production)
+
+| Variable | Source |
+|----------|--------|
+| `DATABASE_URL` | AWS Secrets Manager |
+| `SLACK_BOT_TOKEN` | AWS Secrets Manager |
+| `HCP_BASE_URL` | `https://hcp.yourdomain.com` |
+| `HCP_PORT` | `3100` (ECS task definition) |
+
+### Deployment pipeline
+
+```
+Push to main
+  → npm run build + npm test
+  → Docker build → push to ECR
+  → ECS rolling deploy (health check: /health)
+```
+
+### Agent API keys
+
+Each agent (nanoclaw, openclaw, hermes, Claude Code sessions) gets its own key:
+
+```bash
+# Run inside the ECS task or locally against the deployed DATABASE_URL
+npm run setup-key -- nanoclaw "NanoClaw Production"
+npm run setup-key -- openclaw "OpenClaw Production"
+npm run setup-key -- claude-code "Claude Code Sessions"
+```
+
+Set `HCP_BASE_URL` and `HCP_API_KEY` in each agent's environment. For Claude Code terminal sessions, add to your shell profile:
+
+```bash
+export HCP_BASE_URL=https://hcp.yourdomain.com
+export HCP_API_KEY=hcp_your_key_here
+```
 
 ---
 

@@ -1,43 +1,24 @@
-import { getDb } from "../db/connection.js";
+import { query } from "../db/connection.js";
 import { transitionState } from "./state-machine.js";
-import { routeCR } from "./manual-router.js";
 import type { CoordinationRequest } from "../types/cr.js";
 
-function parseRow(row: Record<string, unknown>): CoordinationRequest {
-  return {
-    ...row,
-    context_package: JSON.parse(row.context_package as string),
-    response_schema: row.response_schema
-      ? JSON.parse(row.response_schema as string)
-      : null,
-    timeout_policy: JSON.parse(row.timeout_policy as string),
-    routing_hints: JSON.parse(row.routing_hints as string),
-    response_data: row.response_data
-      ? JSON.parse(row.response_data as string)
-      : null,
-  } as CoordinationRequest;
-}
-
 async function processExpiredCRs(): Promise<void> {
-  const db = getDb();
   const now = new Date().toISOString();
 
-  const expiredRows = db
-    .prepare(
-      `SELECT * FROM coordination_requests
-       WHERE state IN ('PENDING_RESPONSE', 'ESCALATED')
-       AND timeout_at <= ?`
-    )
-    .all(now) as Array<Record<string, unknown>>;
+  const { rows } = await query<CoordinationRequest>(
+    `SELECT * FROM coordination_requests
+     WHERE state IN ('PENDING_RESPONSE', 'ESCALATED')
+     AND timeout_at <= $1`,
+    [now]
+  );
 
-  for (const row of expiredRows) {
-    const cr = parseRow(row);
+  for (const cr of rows) {
     const fallback = cr.timeout_policy.fallback;
 
     try {
       switch (fallback) {
         case "AUTO_APPROVE":
-          transitionState({
+          await transitionState({
             request_id: cr.request_id,
             from: cr.state,
             to: "RESPONDED",
@@ -53,7 +34,7 @@ async function processExpiredCRs(): Promise<void> {
           break;
 
         case "AUTO_REJECT":
-          transitionState({
+          await transitionState({
             request_id: cr.request_id,
             from: cr.state,
             to: "RESPONDED",
@@ -69,11 +50,9 @@ async function processExpiredCRs(): Promise<void> {
           break;
 
         case "ESCALATE": {
-          const escalationResponderId =
-            cr.timeout_policy.escalation_responder_id;
+          const escalationResponderId = cr.timeout_policy.escalation_responder_id;
           if (!escalationResponderId) {
-            // No escalation target — time out instead
-            transitionState({
+            await transitionState({
               request_id: cr.request_id,
               from: cr.state,
               to: "TIMED_OUT",
@@ -84,7 +63,7 @@ async function processExpiredCRs(): Promise<void> {
             break;
           }
 
-          transitionState({
+          await transitionState({
             request_id: cr.request_id,
             from: cr.state,
             to: "ESCALATED",
@@ -99,10 +78,7 @@ async function processExpiredCRs(): Promise<void> {
             },
           });
 
-          // Re-route with new responder
-          const updatedCr = { ...cr, responder_id: escalationResponderId };
-          // Transition from ESCALATED -> ROUTING -> PENDING_RESPONSE
-          transitionState({
+          await transitionState({
             request_id: cr.request_id,
             from: "ESCALATED",
             to: "ROUTING",
@@ -110,7 +86,7 @@ async function processExpiredCRs(): Promise<void> {
             actor_type: "SYSTEM",
             payload: { responder_id: escalationResponderId },
           });
-          transitionState({
+          await transitionState({
             request_id: cr.request_id,
             from: "ROUTING",
             to: "PENDING_RESPONSE",
@@ -122,8 +98,7 @@ async function processExpiredCRs(): Promise<void> {
         }
 
         default:
-          // BLOCK, FAIL, SKIP all result in TIMED_OUT
-          transitionState({
+          await transitionState({
             request_id: cr.request_id,
             from: cr.state,
             to: "TIMED_OUT",
@@ -134,10 +109,7 @@ async function processExpiredCRs(): Promise<void> {
           break;
       }
     } catch (err) {
-      console.error(
-        `Failed to process timeout for CR ${cr.request_id}:`,
-        err
-      );
+      console.error(`Failed to process timeout for CR ${cr.request_id}:`, err);
     }
   }
 }

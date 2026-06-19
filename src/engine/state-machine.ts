@@ -1,5 +1,4 @@
-import type { State } from "../types/common.js";
-import { getDb } from "../db/connection.js";
+import { query } from "../db/connection.js";
 import { appendAuditEvent } from "../audit/store.js";
 import { emitSSE } from "../utils/sse.js";
 
@@ -29,7 +28,7 @@ export function isCancellable(state: string): boolean {
   return CANCELLABLE_STATES.has(state);
 }
 
-export function transitionState(params: {
+export async function transitionState(params: {
   request_id: string;
   from: string;
   to: string;
@@ -37,66 +36,55 @@ export function transitionState(params: {
   actor_type: string;
   payload?: Record<string, unknown>;
   additionalUpdates?: Record<string, unknown>;
-}): void {
+}): Promise<void> {
   if (!canTransition(params.from, params.to)) {
-    throw new Error(
-      `Invalid state transition: ${params.from} -> ${params.to}`
-    );
+    throw new Error(`Invalid state transition: ${params.from} -> ${params.to}`);
   }
 
-  const db = getDb();
   const now = new Date().toISOString();
-
-  let setClauses = "state = ?, updated_at = ?";
+  const setClauses: string[] = ["state = $1", "updated_at = $2"];
   const updateParams: unknown[] = [params.to, now];
+  let idx = 3;
 
   if (params.additionalUpdates) {
     for (const [key, value] of Object.entries(params.additionalUpdates)) {
-      setClauses += `, ${key} = ?`;
+      setClauses.push(`${key} = $${idx++}`);
       updateParams.push(
-        typeof value === "object" && value !== null
-          ? JSON.stringify(value)
-          : value
+        typeof value === "object" && value !== null ? JSON.stringify(value) : value
       );
     }
   }
 
   updateParams.push(params.request_id, params.from);
 
-  const result = db
-    .prepare(
-      `UPDATE coordination_requests SET ${setClauses} WHERE request_id = ? AND state = ?`
-    )
-    .run(...updateParams);
+  const result = await query(
+    `UPDATE coordination_requests SET ${setClauses.join(", ")} WHERE request_id = $${idx++} AND state = $${idx}`,
+    updateParams
+  );
 
-  if (result.changes === 0) {
+  if (result.rowCount === 0) {
     throw new Error(
       `Failed to transition CR ${params.request_id}: state may have changed concurrently`
     );
   }
 
-  const eventType = `CR_${params.to}`;
-  appendAuditEvent({
+  await appendAuditEvent({
     request_id: params.request_id,
-    event_type: eventType,
+    event_type: `CR_${params.to}`,
     actor: params.actor,
     actor_type: params.actor_type,
     payload: params.payload,
   });
 
-  // Broadcast state change via SSE
-  const updatedRow = db
-    .prepare("SELECT * FROM coordination_requests WHERE request_id = ?")
-    .get(params.request_id) as { agent_id: string } | undefined;
+  const { rows } = await query<{ agent_id: string }>(
+    "SELECT agent_id FROM coordination_requests WHERE request_id = $1",
+    [params.request_id]
+  );
 
-  if (updatedRow) {
+  if (rows[0]) {
     emitSSE({
       event: "state_change",
-      data: {
-        request_id: params.request_id,
-        state: params.to,
-        agent_id: updatedRow.agent_id,
-      },
+      data: { request_id: params.request_id, state: params.to, agent_id: rows[0].agent_id },
     });
   }
 }

@@ -1,30 +1,30 @@
-import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import pg from "pg";
 import { config } from "../config.js";
 
-let db: Database.Database | null = null;
+let pool: pg.Pool | null = null;
 
-export function getDb(): Database.Database {
-  if (db) return db;
-
-  mkdirSync(dirname(config.dbPath), { recursive: true });
-  db = new Database(config.dbPath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
-
-  return db;
+export function getPool(): pg.Pool {
+  if (pool) return pool;
+  pool = new pg.Pool({ connectionString: config.databaseUrl, ssl: { rejectUnauthorized: false } });
+  return pool;
 }
 
-/** Override the DB instance (for testing with in-memory databases). */
-export function setDb(instance: Database.Database): void {
-  db = instance;
+/** Override the pool (for testing). */
+export function setPool(instance: pg.Pool): void {
+  pool = instance;
 }
 
-export function closeDb(): void {
-  if (db) {
-    db.close();
-    db = null;
+export async function closePool(): Promise<void> {
+  if (pool) {
+    await pool.end();
+    pool = null;
   }
+}
+
+/** Convenience wrapper — runs a query on the pool. */
+export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
+  sql: string,
+  params?: unknown[]
+): Promise<pg.QueryResult<T>> {
+  return getPool().query<T>(sql, params);
 }

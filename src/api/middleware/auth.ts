@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { getDb } from "../../db/connection.js";
+import { query } from "../../db/connection.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -25,21 +25,19 @@ export async function authMiddleware(
 
   const token = authHeader.slice(7);
   const hash = hashKey(token);
-  const db = getDb();
 
-  const row = db
-    .prepare(
-      "SELECT key_id, agent_id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL"
-    )
-    .get(hash) as { key_id: string; agent_id: string } | undefined;
+  const { rows } = await query<{ key_id: string; agent_id: string }>(
+    "SELECT key_id, agent_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
+    [hash]
+  );
 
-  if (!row) {
+  if (!rows[0]) {
     reply.code(401).send({ error: "Invalid API key" });
     return;
   }
 
-  request.agentId = row.agent_id;
-  request.keyId = row.key_id;
+  request.agentId = rows[0].agent_id;
+  request.keyId = rows[0].key_id;
 }
 
 export function hashApiKey(key: string): string {

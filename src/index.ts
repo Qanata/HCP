@@ -1,34 +1,27 @@
 import { createServer } from "./api/server.js";
-import { getDb, closeDb } from "./db/connection.js";
+import { getPool, closePool } from "./db/connection.js";
 import { ensureSchema } from "./db/schema.js";
 import { config } from "./config.js";
-import {
-  startTimeoutScheduler,
-  stopTimeoutScheduler,
-} from "./engine/timeout-scheduler.js";
+import { startTimeoutScheduler, stopTimeoutScheduler } from "./engine/timeout-scheduler.js";
 
 async function main() {
-  // Initialize database
-  const db = getDb();
-  ensureSchema(db);
-  console.log(`Database initialized at ${config.dbPath}`);
+  const pool = getPool();
+  await ensureSchema(pool);
+  console.log("Database schema ready");
 
-  // Start server
   const app = await createServer();
   await app.listen({ port: config.port, host: "0.0.0.0" });
   console.log(`HCP server listening on port ${config.port}`);
   console.log(`Portal: ${config.baseUrl}/portal/`);
 
-  // Start timeout scheduler
   startTimeoutScheduler(config.timeoutPollIntervalMs);
   console.log("Timeout scheduler started");
 
-  // Graceful shutdown
   const shutdown = async () => {
     console.log("\nShutting down...");
     stopTimeoutScheduler();
     await app.close();
-    closeDb();
+    await closePool();
     process.exit(0);
   };
 
