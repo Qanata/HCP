@@ -17,11 +17,12 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 // ===== Smooth anchor scrolling =====
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 document.querySelectorAll('a[href^="#"]').forEach(link => {
   link.addEventListener('click', e => {
     e.preventDefault();
     const target = document.querySelector(link.getAttribute('href'));
-    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (target) target.scrollIntoView({ behavior: reduceMotion.matches ? 'auto' : 'smooth', block: 'start' });
   });
 });
 
@@ -44,7 +45,7 @@ document.querySelectorAll('.grid-3, .grid-2').forEach(grid => {
 });
 
 // ===== GitHub Stars & Forks =====
-fetch('https://api.github.com/repos/ipattis/HCP')
+fetch('https://api.github.com/repos/Qanata/HCP')
   .then(r => r.json())
   .then(data => {
     const stars = document.getElementById('star-count');

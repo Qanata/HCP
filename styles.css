@@ -721,6 +721,373 @@ section {
   overflow: visible
 }
 
+/* ===== INLINE CODE IN PROSE ===== */
+p code,
+li code,
+td code {
+  font-size: .86em;
+  padding: .1em .38em;
+  border-radius: 5px;
+  background: hsla(0, 0%, 100%, .06);
+  border: 1px solid hsla(0, 0%, 100%, .06);
+  color: var(--text-bright);
+  white-space: nowrap
+}
+
+.aside {
+  margin-top: 1.5rem;
+  max-width: 720px;
+  color: var(--text-dim);
+  font-size: .9rem;
+  line-height: 1.65
+}
+
+/* ===== ONE REQUEST, THREE PLACES ===== */
+.exhibit {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin-top: 2.5rem;
+  align-items: start
+}
+
+.exhibit-step {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0
+}
+
+.step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: .9rem;
+  min-height: 4.8rem
+}
+
+.step-head h3 {
+  font-size: 1.05rem;
+  margin-bottom: .25rem
+}
+
+.step-head p {
+  color: var(--text-dim);
+  font-size: .88rem;
+  line-height: 1.5
+}
+
+.exhibit .code-block {
+  margin-top: 0
+}
+
+.exhibit .code-block pre {
+  font-size: .76rem
+}
+
+.exhibit .code-block pre,
+.code-block pre.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere
+}
+
+/* A Slack message, drawn in the site's palette rather than Slack's */
+.slack-msg {
+  background: hsl(228, 14%, 11%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.1rem 1.1rem;
+  font-size: .84rem;
+  line-height: 1.55;
+  color: var(--text)
+}
+
+.slack-msg p {
+  margin-top: .6rem
+}
+
+.slack-msg b {
+  color: var(--text-bright);
+  font-weight: 700
+}
+
+.slack-msg code {
+  font-size: .78rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: hsl(340, 85%, 78%);
+  background: hsla(0, 0%, 100%, .07)
+}
+
+.slack-head {
+  display: flex;
+  align-items: center;
+  gap: .5rem
+}
+
+.slack-head strong {
+  color: var(--text-bright)
+}
+
+.slack-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+  font-size: .9rem
+}
+
+.slack-app {
+  font-size: .6rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: .08rem .3rem;
+  border-radius: 3px;
+  background: hsla(0, 0%, 100%, .1);
+  color: var(--text-dim)
+}
+
+.slack-time {
+  color: var(--text-dim);
+  font-size: .74rem
+}
+
+.slack-title {
+  margin-top: .7rem;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--text-bright)
+}
+
+.slack-mention {
+  padding: 0 .25rem;
+  border-radius: 4px;
+  background: hsla(190, 95%, 55%, .15);
+  color: var(--accent2);
+  font-weight: 600
+}
+
+.slack-msg .slack-context {
+  color: var(--text-dim);
+  font-size: .76rem
+}
+
+.slack-actions {
+  display: flex;
+  gap: .5rem;
+  margin-top: .9rem
+}
+
+.slack-btn {
+  padding: .38rem .9rem;
+  border-radius: 6px;
+  border: 1px solid hsla(0, 0%, 100%, .2);
+  font-weight: 700;
+  font-size: .82rem
+}
+
+.slack-btn.approve {
+  background: hsl(152, 62%, 28%);
+  border-color: hsl(152, 62%, 28%);
+  color: #fff
+}
+
+.slack-btn.reject {
+  border-color: hsla(0, 75%, 62%, .55);
+  color: hsl(0, 78%, 72%)
+}
+
+/* An Obsidian note: properties, then the audit trail */
+.note {
+  background: hsl(228, 14%, 11%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.1rem 1.1rem
+}
+
+.note-path {
+  margin-bottom: .8rem;
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere
+}
+
+.note-props {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: .32rem .9rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: hsla(0, 0%, 100%, .02);
+  font-family: var(--mono);
+  font-size: .72rem
+}
+
+.note-props dt {
+  color: var(--text-dim)
+}
+
+.note-props dd {
+  color: var(--text-bright);
+  overflow-wrap: anywhere
+}
+
+.note .tag {
+  display: inline-block;
+  padding: 0 .45rem;
+  border-radius: 100px;
+  background: hsla(265, 90%, 65%, .18);
+  color: hsl(265, 90%, 82%);
+  font-size: .68rem
+}
+
+.note-h {
+  margin-top: 1rem;
+  font-size: .92rem;
+  font-weight: 700;
+  color: var(--text-bright)
+}
+
+.note-trail {
+  list-style: none;
+  display: grid;
+  gap: .3rem;
+  margin-top: .5rem
+}
+
+.note-trail li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: .6rem;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: .68rem
+}
+
+.note-trail time,
+.note-trail span {
+  color: var(--text-dim)
+}
+
+.note-trail code {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  color: var(--accent2);
+  white-space: normal;
+  overflow-wrap: anywhere
+}
+
+/* ===== COPY BESIDE AN ARTIFACT ===== */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 3rem;
+  align-items: center
+}
+
+.split .code-block:first-child {
+  margin-top: 0
+}
+
+.points {
+  list-style: none;
+  display: grid;
+  gap: 1rem;
+  max-width: 600px;
+  margin-top: 1.6rem
+}
+
+.points li {
+  position: relative;
+  padding-left: 1.4rem;
+  color: var(--text-dim);
+  font-size: .95rem;
+  line-height: 1.6
+}
+
+.points li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: .6em;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2))
+}
+
+.points strong {
+  color: var(--text-bright);
+  font-weight: 600
+}
+
+/* ===== TABLES ===== */
+.spec-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--glass);
+  overflow: hidden;
+  font-size: .88rem;
+  line-height: 1.55
+}
+
+.spec-table.wide {
+  margin-top: 2.5rem
+}
+
+.spec-table caption {
+  caption-side: top;
+  padding-bottom: .7rem;
+  text-align: left;
+  color: var(--text-dim);
+  font-size: .8rem
+}
+
+.spec-table th,
+.spec-table td {
+  padding: .85rem 1.1rem;
+  border-top: 1px solid var(--glass-border);
+  text-align: left;
+  vertical-align: top
+}
+
+.spec-table thead th {
+  border-top: none;
+  background: hsla(0, 0%, 100%, .03);
+  color: var(--text-dim);
+  font-size: .78rem;
+  font-weight: 600
+}
+
+.spec-table tbody th {
+  color: var(--text-bright);
+  font-weight: 600
+}
+
+.spec-table td {
+  color: var(--text-dim)
+}
+
+/* ===== KEYBOARD FOCUS ===== */
+a:focus-visible {
+  outline: 2px solid var(--accent2);
+  outline-offset: 3px;
+  border-radius: 4px
+}
+
+.btn:focus-visible {
+  border-radius: 100px
+}
+
 /* ===== FOOTER ===== */
 footer {
   border-top: 1px solid var(--glass-border);
@@ -767,6 +1134,37 @@ footer a {
   }
 }
 
+@media(max-width:1000px) {
+  .exhibit {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 560px
+  }
+
+  .step-head {
+    min-height: 0
+  }
+
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem
+  }
+}
+
+@media(max-width:600px) {
+
+  /* Long inline code may break in running text; in a table each command stays whole. */
+  p code,
+  li code {
+    white-space: normal;
+    overflow-wrap: anywhere
+  }
+
+  .spec-table th,
+  .spec-table td {
+    padding: .75rem .8rem
+  }
+}
+
 @media(max-width:480px) {
   .hero-buttons {
     flex-direction: column;
@@ -775,5 +1173,30 @@ footer a {
 
   .btn {
     justify-content: center
+  }
+}
+
+/* ===== REDUCED MOTION ===== */
+@media(prefers-reduced-motion:reduce) {
+  html {
+    scroll-behavior: auto
+  }
+
+  .mesh-bg,
+  .hero h1 .gradient,
+  .hero-badge .dot {
+    animation: none
+  }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none
+  }
+
+  .card,
+  .btn,
+  .badge {
+    transition: none
   }
 }
