@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the HCP server. install.sh fills in __HOME__ and installs this as
+  ~/Library/LaunchAgents/com.hcp.server.plist. launchd does not expand ~ or $HOME.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hcp.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.local/bin/hcp</string>
+    <string>--env-file</string>
+    <string>__HOME__/.config/hcp/hcp.env</string>
+    <string>serve</string>
+  </array>
+
+  <!-- Start at login and restart if it exits (launchd waits 10 seconds between attempts). -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <!-- The real logs are in the Obsidian vault. This catches what happens before the vault
+       is open: a bad config, a missing vault, a crash. -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/hcp/stderr.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/hcp/stderr.log</string>
+</dict>
+</plist>

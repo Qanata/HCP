@@ -1,5 +1,10 @@
 # HCP — Human Coordination Plane
 
+> **There is a Rust implementation** in [`crates/hcp`](crates/hcp/README.md): a native
+> server for macOS that routes approvals to Slack and logs to an Obsidian vault, with the
+> MCP server and Claude Code hook built into the same binary. The TypeScript service
+> documented below is kept for reference.
+
 A standalone TypeScript/Node.js service that bridges autonomous AI agents and human decision-makers. Agents call HCP to surface decision points (approvals, clarifications, escalations), humans respond via a web portal or Slack, and the service maintains a full audit trail.
 
 Built for [NanoClaw](https://github.com/your-org/nanoclaw) — a WhatsApp-based personal Claude assistant — but usable by any agent system that can make HTTP calls.
