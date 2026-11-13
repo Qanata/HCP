@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>HCP — Human Coordination Plane</title>
   <meta name="description"
-    content="A standalone service that bridges autonomous AI agents and human decision-makers. Route approvals, clarifications, and escalations through a web portal or Slack.">
+    content="A single Rust binary that sits between your AI agents and you. Agents ask before they act, you answer in Slack, and every step is written to your Obsidian vault.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
@@ -14,6 +14,14 @@
     rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <noscript>
+    <style>
+      .reveal {
+        opacity: 1;
+        transform: none
+      }
+    </style>
+  </noscript>
 </head>
 
 <body>
@@ -26,34 +34,35 @@
     <div class="nav-inner">
       <div class="nav-brand">⬡ <span>HCP</span></div>
       <ul class="nav-links">
-        <li><a href="#overview">Overview</a></li>
-        <li><a href="#features">Features</a></li>
-        <li><a href="#quickstart">Quick Start</a></li>
+        <li><a href="#flow">How it works</a></li>
+        <li><a href="#slack">Slack</a></li>
+        <li><a href="#vault">Vault</a></li>
+        <li><a href="#agents">Agents</a></li>
+        <li><a href="#install">Install</a></li>
         <li><a href="#api">API</a></li>
-        <li><a href="#stack">Stack</a></li>
       </ul>
       <div class="gh-stats">
-        <a class="gh-stat" href="https://github.com/ipattis/HCP/stargazers" target="_blank" rel="noopener noreferrer"
+        <a class="gh-stat" href="https://github.com/Qanata/HCP/stargazers" target="_blank" rel="noopener noreferrer"
           aria-label="GitHub stars">
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
             <path
               d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z">
             </path>
           </svg>
           <span id="star-count">—</span>
         </a>
-        <a class="gh-stat" href="https://github.com/ipattis/HCP/fork" target="_blank" rel="noopener noreferrer"
+        <a class="gh-stat" href="https://github.com/Qanata/HCP/fork" target="_blank" rel="noopener noreferrer"
           aria-label="GitHub forks">
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
             <path
               d="M5 3.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zm0 2.122a2.25 2.25 0 10-1.5 0v.878A2.25 2.25 0 005.75 8.5h1.5v2.128a2.251 2.251 0 101.5 0V8.5h1.5a2.25 2.25 0 002.25-2.25v-.878a2.25 2.25 0 10-1.5 0v.878a.75.75 0 01-.75.75h-4.5A.75.75 0 015 6.25v-.878zm3.75 7.378a.75.75 0 11-1.5 0 .75.75 0 011.5 0zm3-8.75a.75.75 0 100-1.5.75.75 0 000 1.5z">
             </path>
           </svg>
           <span id="fork-count">—</span>
         </a>
-        <a class="gh-link" href="https://github.com/ipattis/HCP" target="_blank" rel="noopener noreferrer"
+        <a class="gh-link" href="https://github.com/Qanata/HCP" target="_blank" rel="noopener noreferrer"
           aria-label="GitHub repository">
-          <svg viewBox="0 0 16 16" width="20" height="20" fill="currentColor">
+          <svg viewBox="0 0 16 16" width="20" height="20" fill="currentColor" aria-hidden="true">
             <path
               d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
             </path>
@@ -65,57 +74,135 @@
 
   <!-- HERO -->
   <section class="hero">
-    <div class="hero-badge"><span class="dot"></span> v0.1.0 — Now Open Source</div>
+    <div class="hero-badge"><span class="dot"></span> Version 0.2: one Rust binary, no Node</div>
     <h1>Human<br><span class="gradient">Coordination Plane</span></h1>
-    <p>A standalone service that bridges autonomous AI agents and human decision-makers. Route approvals,
-      clarifications, and escalations — with a full audit trail.</p>
+    <p>Your AI agents ask before they act. You answer in Slack. Every step is written to your Obsidian vault. One
+      small binary, running in the background on your Mac.</p>
     <div class="hero-buttons">
-      <a class="btn btn-primary" href="https://github.com/ipattis/HCP" target="_blank">⬡ View on GitHub</a>
-      <a class="btn btn-ghost" href="#quickstart">Get Started →</a>
+      <a class="btn btn-primary" href="https://github.com/Qanata/HCP" target="_blank" rel="noopener noreferrer">⬡ View
+        on GitHub</a>
+      <a class="btn btn-ghost" href="#install">Install on a Mac</a>
     </div>
   </section>
 
-  <!-- OVERVIEW -->
-  <section id="overview">
+  <!-- ONE REQUEST, START TO FINISH -->
+  <section id="flow">
     <div class="reveal">
-      <div class="section-label">Overview</div>
-      <h2 class="section-title">Close the loop between agents and humans</h2>
-      <p class="section-desc">Agents currently have no way to request human approval, clarification, or escalation —
-        they either proceed autonomously or fail silently. HCP fills this gap.</p>
+      <div class="section-label">How it works</div>
+      <h2 class="section-title">One request, start to finish</h2>
+      <p class="section-desc">An agent is about to do something it should not decide alone. Here is that one request
+        in the three places it shows up.</p>
     </div>
-    <div class="flow reveal">
-      <div class="flow-step">
-        <div class="flow-num">1</div>
-        <p>An agent <strong>submits a Coordination Request</strong> with context, urgency, and a timeout policy.</p>
+
+    <div class="exhibit reveal">
+      <div class="exhibit-step">
+        <div class="step-head">
+          <div class="flow-num">1</div>
+          <div>
+            <h3>The agent asks</h3>
+            <p>Claude Code is about to force-push. The hook holds the command and asks you.</p>
+          </div>
+        </div>
+        <div class="code-block">
+          <div class="code-header"><span class="dot-r"></span><span class="dot-y"></span><span
+              class="dot-g"></span>&nbsp; hcp hook</div>
+          <pre><span class="cm"># Claude Code is about to run</span>
+git push --force origin main
+
+<span class="cm"># the hook holds it and asks you</span>
+<span class="fn">[hcp-hook]</span> waiting for approval in Slack (request 01M7ADF3…)
+
+<span class="cm"># you tap Approve</span>
+<span class="fn">[hcp-hook]</span> <span class="str">approved by slack:isaac</span>
+
+<span class="cm"># the command runs. A rejection, or no
+# answer in five minutes, would block it</span></pre>
+        </div>
       </div>
-      <div class="flow-step">
-        <div class="flow-num">2</div>
-        <p>HCP <strong>routes the CR</strong> to the designated human responder via the web portal or Slack.</p>
+
+      <div class="exhibit-step">
+        <div class="step-head">
+          <div class="flow-num">2</div>
+          <div>
+            <h3>You answer in Slack</h3>
+            <p>The request arrives in your channel and says what happens if nobody answers.</p>
+          </div>
+        </div>
+        <div class="slack-msg" role="img"
+          aria-label="A Slack message from the HCP app: an approval request from the agent claude-code, for isaac, to run git push --force origin main. It will be rejected automatically at 12:22 PM. There are Approve and Reject buttons.">
+          <div class="slack-head"><span class="slack-avatar">⬡</span><strong>HCP</strong><span
+              class="slack-app">APP</span><span class="slack-time">12:17 PM</span></div>
+          <div class="slack-title">Approval request</div>
+          <p>⚠️&nbsp; <b>Urgency:</b> HIGH<br><b>Agent:</b> <code>claude-code</code><br><b>For:</b> <span
+              class="slack-mention">@isaac</span><br><b>Respond by:</b> Today 12:22 PM — after that it is rejected
+            automatically</p>
+          <p><b>Summary</b><br>Claude Code wants to run: <code>git push --force origin main</code></p>
+          <p class="slack-context">ID <code>01M7ADF336CWQ1VMM5SQMFZJ3Y</code></p>
+          <div class="slack-actions"><span class="slack-btn approve">Approve</span><span
+              class="slack-btn reject">Reject</span></div>
+        </div>
       </div>
-      <div class="flow-step">
-        <div class="flow-num">3</div>
-        <p>The human <strong>reviews and responds</strong> — approve, reject, provide input, or escalate.</p>
-      </div>
-      <div class="flow-step">
-        <div class="flow-num">4</div>
-        <p>The agent <strong>polls or receives</strong> the structured response and continues execution.</p>
-      </div>
-      <div class="flow-step">
-        <div class="flow-num">5</div>
-        <p>Every state change is recorded in an <strong>append-only audit log</strong>.</p>
+
+      <div class="exhibit-step">
+        <div class="step-head">
+          <div class="flow-num">3</div>
+          <div>
+            <h3>The vault keeps the record</h3>
+            <p>A note for the request, rewritten at every step, in the vault you already use.</p>
+          </div>
+        </div>
+        <div class="note" role="img"
+          aria-label="An Obsidian note for the request. Its properties show state DELIVERED, intent APPROVAL, agent claude-code, decision approved, responded by slack:isaac. Below is an audit trail of seven timestamped events, from CR_SUBMITTED to CR_DELIVERED.">
+          <div class="note-path">HCP / Requests / 2026-11 / 01M7ADF3….md</div>
+          <dl class="note-props">
+            <dt>state</dt>
+            <dd>DELIVERED</dd>
+            <dt>intent</dt>
+            <dd>APPROVAL</dd>
+            <dt>agent</dt>
+            <dd>claude-code</dd>
+            <dt>decision</dt>
+            <dd>approved</dd>
+            <dt>responded_by</dt>
+            <dd>slack:isaac</dd>
+            <dt>tags</dt>
+            <dd><span class="tag">#hcp/approval</span> <span class="tag">#hcp/state/delivered</span></dd>
+          </dl>
+          <div class="note-h">Audit trail</div>
+          <ul class="note-trail">
+            <li><time>12:17:38</time><code>CR_SUBMITTED</code><span>claude-code</span></li>
+            <li><time>12:17:38</time><code>CR_ROUTING</code><span>system</span></li>
+            <li><time>12:17:39</time><code>SLACK_NOTIFIED</code><span>system</span></li>
+            <li><time>12:17:39</time><code>CR_PENDING_RESPONSE</code><span>system</span></li>
+            <li><time>12:18:52</time><code>CR_RESPONDED</code><span>slack:U07ISAAC</span></li>
+            <li><time>12:18:52</time><code>SLACK_INTERACTION</code><span>slack:U07ISAAC</span></li>
+            <li><time>12:18:53</time><code>CR_DELIVERED</code><span>claude-code</span></li>
+          </ul>
+        </div>
       </div>
     </div>
+
+    <p class="aside reveal">No answer by the deadline? The request's own timeout policy applies: reject it, approve it,
+      escalate it once to someone else, or let it time out.</p>
   </section>
 
   <!-- ARCHITECTURE -->
   <section id="architecture">
     <div class="reveal">
       <div class="section-label">Architecture</div>
-      <h2 class="section-title">How it all connects</h2>
+      <h2 class="section-title">One binary in the middle</h2>
+      <p class="section-desc"><code>hcp</code> is a single executable. It is the API your agents call, the thing that
+        talks to Slack, the scheduler that enforces deadlines, and the writer of your vault. The MCP server and the
+        Claude Code hook are the same file, run with a different word after it.</p>
     </div>
     <div class="arch-diagram reveal">
-      <svg viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg" fill="none"
-        style="width:100%;max-width:900px;margin:0 auto;display:block">
+      <svg viewBox="0 0 900 440" xmlns="http://www.w3.org/2000/svg" fill="none" role="img"
+        aria-labelledby="arch-title arch-desc" style="width:100%;max-width:900px;margin:0 auto;display:block">
+        <title id="arch-title">HCP architecture</title>
+        <desc id="arch-desc">Agents send requests to the hcp binary over the REST API, the MCP server or the Claude
+          Code hook, and receive answers. hcp posts requests to Slack over an outbound WebSocket and receives button
+          clicks back. It stores requests, keys and audit events in Postgres, and writes notes and the audit log to an
+          Obsidian vault.</desc>
         <defs>
           <filter id="glow">
             <feGaussianBlur stdDeviation="4" result="b" />
@@ -141,215 +228,384 @@
             <path d="M 0 1 L 10 5 L 0 9 z" fill="hsl(265,90%,65%)" opacity=".8" />
           </marker>
         </defs>
-        <!-- Boxes -->
-        <rect x="40" y="160" width="180" height="90" rx="14" stroke="url(#gr1)" stroke-width="1.5"
-          fill="hsla(228,20%,14%,.7)" filter="url(#glow)" />
-        <text x="130" y="197" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
-          font-weight="700">AI Agent</text>
-        <text x="130" y="220" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
-          font-size="11">(NanoClaw etc)</text>
 
-        <rect x="340" y="140" width="220" height="130" rx="14" stroke="url(#gr1)" stroke-width="2"
+        <!-- Agents -->
+        <rect x="30" y="90" width="210" height="150" rx="14" stroke="url(#gr1)" stroke-width="1.5"
           fill="hsla(228,20%,14%,.7)" filter="url(#glow)" />
-        <text x="450" y="195" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="15"
-          font-weight="800">HCP Server</text>
-        <text x="450" y="218" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
-          font-size="11">Fastify · SQLite</text>
-        <text x="450" y="238" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
-          font-size="11">State Machine · Router</text>
+        <text x="135" y="124" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
+          font-weight="700">Your agents</text>
+        <text x="135" y="154" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="JetBrains Mono,monospace"
+          font-size="11">REST API</text>
+        <text x="135" y="178" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="JetBrains Mono,monospace"
+          font-size="11">hcp mcp</text>
+        <text x="135" y="202" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="JetBrains Mono,monospace"
+          font-size="11">hcp hook</text>
+        <text x="135" y="224" text-anchor="middle" fill="hsl(220,12%,50%)" font-family="Inter,sans-serif"
+          font-size="10">Claude Code, any MCP harness</text>
 
-        <rect x="680" y="160" width="180" height="90" rx="14" stroke="url(#gr2)" stroke-width="1.5"
+        <!-- hcp -->
+        <rect x="340" y="80" width="220" height="170" rx="14" stroke="url(#gr1)" stroke-width="2"
           fill="hsla(228,20%,14%,.7)" filter="url(#glow)" />
-        <text x="770" y="197" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
+        <text x="450" y="120" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="JetBrains Mono,monospace"
+          font-size="18" font-weight="700">hcp</text>
+        <text x="450" y="142" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">one Rust binary, on your Mac</text>
+        <text x="450" y="178" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">API and state machine</text>
+        <text x="450" y="200" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">deadlines and escalation</text>
+        <text x="450" y="222" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">Slack and vault writers</text>
+
+        <!-- Slack -->
+        <rect x="660" y="90" width="210" height="150" rx="14" stroke="url(#gr2)" stroke-width="1.5"
+          fill="hsla(228,20%,14%,.7)" filter="url(#glow)" />
+        <text x="765" y="124" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
           font-weight="700">Slack</text>
-        <text x="770" y="220" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
-          font-size="11">Block Kit · Buttons</text>
+        <text x="765" y="154" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">where you answer</text>
+        <text x="765" y="184" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">Approve, Reject, Respond</text>
+        <text x="765" y="214" text-anchor="middle" fill="hsl(220,12%,50%)" font-family="Inter,sans-serif"
+          font-size="10">no public URL needed</text>
 
-        <rect x="360" y="20" width="180" height="80" rx="14" stroke="url(#gr1)" stroke-width="1.5"
+        <!-- Postgres -->
+        <rect x="225" y="340" width="200" height="80" rx="14" stroke="url(#gr1)" stroke-width="1.5"
           fill="hsla(228,20%,14%,.7)" filter="url(#glow)" />
-        <text x="450" y="55" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
-          font-weight="700">Web Portal</text>
-        <text x="450" y="76" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
-          font-size="11">Alpine.js · SSE</text>
+        <text x="325" y="373" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
+          font-weight="700">Postgres</text>
+        <text x="325" y="396" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">requests, keys, audit events</text>
 
-        <rect x="360" y="320" width="180" height="80" rx="14" stroke="url(#gr2)" stroke-width="1.5"
+        <!-- Obsidian vault -->
+        <rect x="475" y="340" width="200" height="80" rx="14" stroke="url(#gr2)" stroke-width="1.5"
           fill="hsla(228,20%,14%,.7)" filter="url(#glow)" />
-        <text x="450" y="355" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
-          font-weight="700">Audit Store</text>
-        <text x="450" y="376" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
-          font-size="11">Append-only log</text>
+        <text x="575" y="373" text-anchor="middle" fill="hsl(0,0%,96%)" font-family="Inter,sans-serif" font-size="14"
+          font-weight="700">Obsidian vault</text>
+        <text x="575" y="396" text-anchor="middle" fill="hsl(220,12%,62%)" font-family="Inter,sans-serif"
+          font-size="11">request notes, audit log</text>
 
-        <!-- Lines -->
-        <line x1="220" y1="190" x2="340" y2="190" stroke="hsl(190,95%,55%)" stroke-width="1.5" opacity=".6"
+        <!-- Agents <-> hcp -->
+        <line x1="240" y1="150" x2="340" y2="150" stroke="hsl(190,95%,55%)" stroke-width="1.5" opacity=".6"
           marker-end="url(#arrow)" />
-        <text x="280" y="183" text-anchor="middle" fill="hsl(190,95%,55%)" font-family="JetBrains Mono,monospace"
-          font-size="9" opacity=".9">REST API</text>
-
-        <line x1="340" y1="215" x2="220" y2="215" stroke="hsl(265,90%,65%)" stroke-width="1.5" opacity=".6"
+        <text x="290" y="142" text-anchor="middle" fill="hsl(190,95%,55%)" font-family="JetBrains Mono,monospace"
+          font-size="9" opacity=".9">requests</text>
+        <line x1="340" y1="180" x2="240" y2="180" stroke="hsl(265,90%,65%)" stroke-width="1.5" opacity=".6"
           marker-end="url(#arrowP)" />
-        <text x="280" y="232" text-anchor="middle" fill="hsl(265,90%,65%)" font-family="JetBrains Mono,monospace"
-          font-size="9" opacity=".9">Poll / SSE</text>
+        <text x="290" y="197" text-anchor="middle" fill="hsl(265,90%,65%)" font-family="JetBrains Mono,monospace"
+          font-size="9" opacity=".9">answers</text>
 
-        <line x1="560" y1="195" x2="680" y2="195" stroke="hsl(190,95%,55%)" stroke-width="1.5" opacity=".6"
+        <!-- hcp <-> Slack -->
+        <line x1="560" y1="150" x2="660" y2="150" stroke="hsl(190,95%,55%)" stroke-width="1.5" opacity=".6"
           marker-end="url(#arrow)" />
-        <text x="620" y="188" text-anchor="middle" fill="hsl(190,95%,55%)" font-family="JetBrains Mono,monospace"
-          font-size="9" opacity=".9">Slack API</text>
-
-        <line x1="680" y1="220" x2="560" y2="220" stroke="hsl(265,90%,65%)" stroke-width="1.5" opacity=".6"
+        <text x="610" y="142" text-anchor="middle" fill="hsl(190,95%,55%)" font-family="JetBrains Mono,monospace"
+          font-size="9" opacity=".9">messages</text>
+        <line x1="660" y1="180" x2="560" y2="180" stroke="hsl(265,90%,65%)" stroke-width="1.5" opacity=".6"
           marker-end="url(#arrowP)" />
-        <text x="620" y="237" text-anchor="middle" fill="hsl(265,90%,65%)" font-family="JetBrains Mono,monospace"
-          font-size="9" opacity=".9">Interactions</text>
+        <text x="610" y="197" text-anchor="middle" fill="hsl(265,90%,65%)" font-family="JetBrains Mono,monospace"
+          font-size="9" opacity=".9">clicks</text>
+        <text x="610" y="168" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif"
+          font-size="9">outbound WebSocket</text>
 
-        <line x1="450" y1="140" x2="450" y2="100" stroke="hsl(190,95%,55%)" stroke-width="1.5" opacity=".6"
+        <!-- hcp -> Postgres, hcp -> vault -->
+        <line x1="410" y1="250" x2="345" y2="340" stroke="hsl(190,95%,55%)" stroke-width="1.5" opacity=".6"
           marker-end="url(#arrow)" />
-        <line x1="450" y1="270" x2="450" y2="320" stroke="hsl(265,90%,65%)" stroke-width="1.5" opacity=".6"
+        <text x="338" y="296" text-anchor="end" fill="hsl(190,95%,55%)" font-family="JetBrains Mono,monospace"
+          font-size="9" opacity=".9">one transaction</text>
+        <line x1="490" y1="250" x2="555" y2="340" stroke="hsl(265,90%,65%)" stroke-width="1.5" opacity=".6"
           marker-end="url(#arrowP)" />
+        <text x="562" y="296" text-anchor="start" fill="hsl(265,90%,65%)" font-family="JetBrains Mono,monospace"
+          font-size="9" opacity=".9">queued, then written</text>
       </svg>
     </div>
     <div class="grid-3">
       <div class="card">
-        <div class="card-icon">🔀</div>
-        <h3>Gateway API</h3>
-        <p>REST endpoints for full CR lifecycle management — create, poll, respond, cancel.</p>
+        <h3>Runs on your Mac</h3>
+        <p>Installs as a launchd service. It starts at login, is restarted if it stops, and listens on localhost only
+          unless you say otherwise.</p>
       </div>
       <div class="card">
-        <div class="card-icon">⚙️</div>
-        <h3>State Machine</h3>
-        <p>Enforces valid state transitions with optimistic concurrency control.</p>
+        <h3>Postgres holds the state</h3>
+        <p>Requests, API keys and audit events live in Postgres. A state change and its audit record are written in
+          one transaction, so neither exists without the other.</p>
       </div>
       <div class="card">
-        <div class="card-icon">📋</div>
-        <h3>Audit Store</h3>
-        <p>Append-only event log capturing every state change for full traceability.</p>
+        <h3>Obsidian holds the record</h3>
+        <p>Each audit event is queued in that same transaction and then written to your vault. If the vault is
+          unavailable the log falls behind and catches up. Entries are not lost.</p>
       </div>
     </div>
   </section>
 
-  <!-- FEATURES -->
-  <section id="features">
+  <!-- SLACK -->
+  <section id="slack">
+    <div class="split">
+      <div class="reveal">
+        <div class="section-label">Slack</div>
+        <h2 class="section-title">Answered where you already are</h2>
+        <p class="section-desc">There is no portal to keep open. Requests arrive in a Slack channel and you answer from
+          your phone or your desk.</p>
+        <ul class="points">
+          <li><strong>No public URL.</strong> <code>hcp</code> opens an outbound connection to Slack (Socket Mode), so
+            a Mac behind a home router works as it is.</li>
+          <li><strong>The message says what silence means.</strong> Every request shows its deadline and what happens
+            then. If no answer means yes, that part is in bold.</li>
+          <li><strong>Name a responder and only their click counts.</strong> Anyone else who presses a button is told,
+            privately, why nothing happened.</li>
+          <li><strong>Messages retire themselves.</strong> Once a request is answered, cancelled, escalated or timed
+            out, its message is rewritten to say so and the buttons are removed.</li>
+        </ul>
+      </div>
+      <div class="reveal">
+        <table class="spec-table">
+          <caption>What you get for each kind of request</caption>
+          <thead>
+            <tr>
+              <th scope="col">The agent asks for</th>
+              <th scope="col">In Slack</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">An approval</th>
+              <td>Approve and Reject buttons</td>
+            </tr>
+            <tr>
+              <th scope="row">A clarification, decision, review, input or escalation</th>
+              <td>A Respond button that opens a text box. Your words go back to the agent</td>
+            </tr>
+            <tr>
+              <th scope="row">Nothing; it is a notification</th>
+              <td>Logged to the vault. Posted only if you name a channel for notifications</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- VAULT -->
+  <section id="vault">
+    <div class="split">
+      <div class="reveal">
+        <div class="section-label">Vault</div>
+        <h2 class="section-title">The audit trail is a folder of Markdown</h2>
+        <p class="section-desc">The log lives in your Obsidian vault as plain notes you can search, link and query,
+          next to everything else you keep there.</p>
+        <ul class="points">
+          <li><strong>One note per request</strong>, with properties you can filter on: state, intent, urgency, agent,
+            responder, decision, deadline.</li>
+          <li><strong>An append-only daily log.</strong> Each line links to its request and ends in a block ID, so
+            another note can point at one specific event.</li>
+          <li><strong>Agent text stays inert.</strong> Whatever an agent puts in a request is written as plain text.
+            It cannot plant links, tags, properties or plugin code in your vault.</li>
+          <li><strong>Postgres is still the system of record.</strong> The vault is the copy you read.</li>
+        </ul>
+      </div>
+      <div class="reveal">
+        <div class="code-block">
+          <div class="code-header"><span class="dot-r"></span><span class="dot-y"></span><span
+              class="dot-g"></span>&nbsp; your vault</div>
+          <pre>HCP/
+  Requests/2026-11/
+    01M7ADF336CWQ1VMM5SQMFZJ3Y.md   <span class="cm">one note per request</span>
+  Log/
+    HCP Log 2026-11-13.md           <span class="cm">every event, one line each</span>
+  Service/
+    HCP Service 2026-11-13.md       <span class="cm">the server's own log</span></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-header"><span class="dot-r"></span><span class="dot-y"></span><span
+              class="dot-g"></span>&nbsp; HCP Log 2026-11-13.md</div>
+          <pre class="wrap">- <span class="str">`12:17:38.406`</span> <span class="kw">`CR_SUBMITTED`</span> · [[01M7ADF3…|APPROVAL: Claude Code wants to run…]] · `claude-code` (AGENT) <span class="cm">^01M7ADF3394J</span>
+- <span class="str">`12:18:52.117`</span> <span class="kw">`CR_RESPONDED`</span> · [[01M7ADF3…|APPROVAL: Claude Code wants to run…]] · `slack:U07ISAAC` (HUMAN) <span class="cm">^01M7ADF341Q7</span></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AGENTS -->
+  <section id="agents">
     <div class="reveal">
-      <div class="section-label">Features</div>
-      <h2 class="section-title">Built for production agent workflows</h2>
-      <p class="section-desc">Everything you need to coordinate between AI agents and human decision-makers.</p>
+      <div class="section-label">Agents</div>
+      <h2 class="section-title">Three ways for an agent to ask</h2>
+      <p class="section-desc">All three end in the same place: a request in Slack and a record in the vault.</p>
     </div>
     <div class="grid-3">
       <div class="card">
-        <div class="card-icon">🔄</div>
-        <h3>State Machine</h3>
-        <p>SUBMITTED → ROUTING → PENDING → RESPONDED → DELIVERED. Every transition validated, every edge case handled.
-        </p>
+        <h3>REST API</h3>
+        <p>Post a request, poll for the answer. Anything that can make an HTTP call can use it, with an API key per
+          agent.</p>
       </div>
       <div class="card">
-        <div class="card-icon">⏱</div>
-        <h3>Timeout Policies</h3>
-        <p>AUTO_APPROVE, AUTO_REJECT, ESCALATE, BLOCK, or FAIL. Define exactly what happens when humans don't respond in
-          time.</p>
+        <h3>MCP server</h3>
+        <p><code>hcp mcp</code> gives any MCP harness five tools. <code>hcp_coordinate</code> asks and waits for your
+          answer; <code>hcp_notify</code> tells you something and moves on. It speaks every MCP revision from
+          2024-11-05 to 2026-07-28.</p>
       </div>
       <div class="card">
-        <div class="card-icon">📦</div>
-        <h3>TypeScript SDK</h3>
-        <p>Typed client with <code>submit()</code> for fire-and-forget and <code>coordinate()</code> for submit-and-wait
-          patterns.</p>
+        <h3>Claude Code hook</h3>
+        <p><code>hcp hook</code> sees every command before it runs, whether the agent wants it to or not. Nothing in
+          the agent's prompt has to change.</p>
+      </div>
+    </div>
+
+    <div class="reveal">
+      <table class="spec-table wide">
+        <caption>How the hook sorts Bash commands</caption>
+        <thead>
+          <tr>
+            <th scope="col">Tier</th>
+            <th scope="col">For example</th>
+            <th scope="col">What happens</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Safe</th>
+            <td><code>ls</code>, <code>git status</code>, <code>cat x | grep y</code></td>
+            <td>Passes silently, without contacting the server</td>
+          </tr>
+          <tr>
+            <th scope="row">Notify</th>
+            <td><code>cargo build</code>, <code>npm install</code>, file edits</td>
+            <td>Logged. Nothing waits</td>
+          </tr>
+          <tr>
+            <th scope="row">Gate</th>
+            <td><code>rm -rf</code>, <code>git push</code>, <code>terraform apply</code>, <code>DROP TABLE</code></td>
+            <td>Held until you approve it in Slack</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="aside">The gate is a list of patterns for common destructive commands. It is a tripwire, not a
+        sandbox: a determined agent can find a command it does not match.</p>
+    </div>
+  </section>
+
+  <!-- WHAT IT REFUSES TO DO -->
+  <section id="safety">
+    <div class="reveal">
+      <div class="section-label">By design</div>
+      <h2 class="section-title">When it is unsure, it says no</h2>
+      <p class="section-desc">An approval step that waves things through when something breaks is not an approval
+        step. These are the cases <code>hcp</code> is built around.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>An agent cannot approve itself</h3>
+        <p>Answering through the API takes a key with a separate permission, one that agent keys are not given.</p>
       </div>
       <div class="card">
-        <div class="card-icon">🌐</div>
-        <h3>Web Portal</h3>
-        <p>Lightweight Alpine.js SPA with real-time updates via SSE. Urgency-coded, responsive, zero config.</p>
+        <h3>Nothing is approved unseen</h3>
+        <p>If Slack could not deliver a request, it never counts as waiting on you, so an approve-on-timeout policy
+          cannot fire on something nobody was shown.</p>
       </div>
       <div class="card">
-        <div class="card-icon">💬</div>
-        <h3>Slack Integration</h3>
-        <p>Block Kit notifications with interactive approve/reject buttons. One-click decisions from Slack.</p>
+        <h3>A held command needs a person</h3>
+        <p>A rejection, a timeout, a lost connection and an unreachable server all block it. Letting commands through
+          when the server is down is a setting you have to turn on.</p>
       </div>
       <div class="card">
-        <div class="card-icon">🔐</div>
-        <h3>Audit Trail</h3>
-        <p>Every action recorded — who did what, when, and why. SHA256-hashed API keys with one-show-only creation.</p>
+        <h3>Clicks are authenticated</h3>
+        <p>Button presses arrive over the connection <code>hcp</code> opened to Slack, or over HTTP with Slack's
+          signature checked. Nobody can approve by guessing a URL.</p>
+      </div>
+      <div class="card">
+        <h3>Escalation ends</h3>
+        <p>An unanswered request escalates once, to the person you named, with a fresh deadline. If they do not answer
+          either, it times out.</p>
+      </div>
+      <div class="card">
+        <h3>Agents see only their own</h3>
+        <p>An agent's key reads, cancels and collects answers for that agent's requests and nobody else's.</p>
       </div>
     </div>
   </section>
 
-  <!-- QUICK START -->
-  <section id="quickstart">
+  <!-- INSTALL -->
+  <section id="install">
     <div class="reveal">
-      <div class="section-label">Quick Start</div>
-      <h2 class="section-title">Up and running in 60 seconds</h2>
+      <div class="section-label">Install</div>
+      <h2 class="section-title">Install on a Mac</h2>
+      <p class="section-desc">You need a Rust toolchain, a Postgres database, an Obsidian vault and a Slack app. The
+        installer builds the binary and sets it up as a background service.</p>
     </div>
     <div class="code-block reveal">
       <div class="code-header"><span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>&nbsp;
         terminal</div>
-      <pre><span class="cm"># Install dependencies</span>
-<span class="fn">npm</span> install
+      <pre><span class="fn">git</span> clone https://github.com/Qanata/HCP &amp;&amp; <span class="fn">cd</span> HCP
 
-<span class="cm"># Create an API key for your agent</span>
-<span class="fn">npm</span> run setup-key -- my-agent <span class="str">"My Agent Key"</span>
+<span class="cm"># Build and install. The first run creates ~/.config/hcp/hcp.env and stops there</span>
+<span class="fn">deploy/macos/install.sh</span>
 
-<span class="cm"># Start the server</span>
-<span class="fn">npm</span> run dev
-<span class="cm"># → Server running on http://localhost:3100</span></pre>
+<span class="cm"># Fill in that file, then create a key for each agent</span>
+<span class="fn">~/.local/bin/hcp</span> --env-file ~/.config/hcp/hcp.env keys create claude-code
+
+<span class="cm"># Run the installer again to start the service</span>
+<span class="fn">deploy/macos/install.sh</span>
+
+<span class="fn">curl</span> http://127.0.0.1:3100/health</pre>
     </div>
     <div class="code-block reveal">
       <div class="code-header"><span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>&nbsp;
-        submit a coordination request</div>
-      <pre><span class="fn">curl</span> -X POST http://localhost:3100/v1/requests \
-  -H <span class="str">"Authorization: Bearer $HCP_API_KEY"</span> \
-  -H <span class="str">"Content-Type: application/json"</span> \
-  -d <span class="str">'{
-    "intent": "APPROVAL",
-    "urgency": "HIGH",
-    "context_package": {
-      "summary": "Deploy v2.1.0 to production"
-    },
-    "timeout_policy": {
-      "timeout_seconds": 600,
-      "fallback": "BLOCK"
-    },
-    "routing_hints": {
-      "responder_id": "ops-lead",
-      "channel": "portal"
-    }
-  }'</span></pre>
+        ~/.config/hcp/hcp.env</div>
+      <pre><span class="kw">DATABASE_URL</span>=<span class="str">"postgresql://…"</span>
+<span class="kw">HCP_OBSIDIAN_VAULT</span>=<span class="str">"~/Obsidian/Main"</span>   <span class="cm"># the vault folder; logs go under HCP/ inside it</span>
+<span class="kw">SLACK_BOT_TOKEN</span>=<span class="str">xoxb-…</span>
+<span class="kw">SLACK_APP_TOKEN</span>=<span class="str">xapp-…</span>               <span class="cm"># enables Socket Mode</span>
+<span class="kw">HCP_SLACK_CHANNEL</span>=<span class="str">C0123456789</span>        <span class="cm"># where requests are posted</span></pre>
     </div>
+    <p class="aside reveal">Creating the Slack app, connecting Claude Code and MCP harnesses, and every setting are
+      covered in the <a href="https://github.com/Qanata/HCP/blob/main/crates/hcp/README.md" target="_blank"
+        rel="noopener noreferrer">README</a>.</p>
   </section>
 
   <!-- API REFERENCE -->
   <section id="api">
     <div class="reveal">
-      <div class="section-label">API Reference</div>
-      <h2 class="section-title">RESTful, predictable, typed</h2>
-      <p class="section-desc">All <code>/v1/*</code> endpoints require <code>Authorization: Bearer &lt;key&gt;</code>.
-      </p>
+      <div class="section-label">API</div>
+      <h2 class="section-title">A small REST API</h2>
+      <p class="section-desc">Every <code>/v1</code> endpoint takes <code>Authorization: Bearer &lt;key&gt;</code>. An
+        agent's key works only on that agent's requests.</p>
     </div>
     <div class="reveal" style="margin-top:2rem">
       <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/v1/requests</span><span
-          class="endpoint-desc">Create Coordination Request</span></div>
-      <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/requests/:id</span><span
-          class="endpoint-desc">Get CR (auto-transitions RESPONDED → DELIVERED)</span></div>
+          class="endpoint-desc">Submit a coordination request</span></div>
+      <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/requests/{id}</span><span
+          class="endpoint-desc">Read one. Reading your answered request takes delivery of the answer</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/requests</span><span
-          class="endpoint-desc">List CRs with filters</span></div>
-      <div class="endpoint"><span class="method post">POST</span><span
-          class="endpoint-path">/v1/requests/:id/respond</span><span class="endpoint-desc">Submit human response</span>
-      </div>
+          class="endpoint-desc">List your requests, with filters</span></div>
       <div class="endpoint"><span class="method delete">DELETE</span><span
-          class="endpoint-path">/v1/requests/:id</span><span class="endpoint-desc">Cancel a CR</span></div>
+          class="endpoint-path">/v1/requests/{id}</span><span class="endpoint-desc">Withdraw a request</span></div>
+      <div class="endpoint"><span class="method post">POST</span><span
+          class="endpoint-path">/v1/requests/{id}/respond</span><span class="endpoint-desc">Answer one. Needs a key
+          with the respond permission</span>
+      </div>
       <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/audit</span><span
-          class="endpoint-desc">Query audit events</span></div>
+          class="endpoint-desc">Audit events</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/events</span><span
-          class="endpoint-desc">Real-time SSE stream</span></div>
+          class="endpoint-desc">State changes as they happen, over SSE</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/health</span><span
           class="endpoint-desc">Health check</span></div>
     </div>
   </section>
 
   <!-- STATE MACHINE -->
-  <section>
+  <section id="lifecycle">
     <div class="reveal">
-      <div class="section-label">State Machine</div>
-      <h2 class="section-title">Every CR follows a defined lifecycle</h2>
+      <div class="section-label">Lifecycle</div>
+      <h2 class="section-title">Every request follows a defined lifecycle</h2>
+      <p class="section-desc">A request is only waiting on you once it has actually been delivered. One that never
+        reaches Slack goes straight from routing to timed out.</p>
     </div>
     <div class="arch-diagram reveal">
-      <svg viewBox="0 0 700 520" xmlns="http://www.w3.org/2000/svg" fill="none"
-        style="width:100%;max-width:700px;margin:0 auto;display:block">
+      <svg viewBox="0 0 700 520" xmlns="http://www.w3.org/2000/svg" fill="none" role="img"
+        aria-labelledby="life-title life-desc" style="width:100%;max-width:700px;margin:0 auto;display:block">
+        <title id="life-title">Request lifecycle</title>
+        <desc id="life-desc">A request moves from SUBMITTED to ROUTING to PENDING_RESPONSE. From there it is answered
+          and becomes RESPONDED then DELIVERED, or it is ESCALATED once and routed again, or it becomes TIMED_OUT. A
+          request that cannot be delivered goes from ROUTING to TIMED_OUT. Any active request can be CANCELLED.</desc>
         <defs>
           <filter id="sg">
             <feGaussianBlur stdDeviation="3" result="b" />
@@ -389,6 +645,13 @@
           font-size="12" font-weight="700">ROUTING</text>
         <line x1="350" y1="138" x2="350" y2="170" stroke="hsl(220,12%,55%)" stroke-width="1.2" opacity=".5"
           marker-end="url(#sa)" />
+        <text x="358" y="158" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif" font-size="9"
+          opacity=".8">delivered</text>
+        <!-- ROUTING straight to TIMED_OUT when it cannot be delivered -->
+        <path d="M 430 114 Q 600 114 590 270" stroke="hsl(330,85%,60%)" stroke-width="1.2" opacity=".4" fill="none"
+          stroke-dasharray="5 4" marker-end="url(#sa)" />
+        <text x="540" y="104" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif" font-size="9"
+          opacity=".8">never delivered</text>
         <!-- PENDING_RESPONSE -->
         <rect x="245" y="170" width="210" height="48" rx="12" stroke="url(#sga)" stroke-width="2"
           fill="hsla(228,20%,14%,.8)" filter="url(#sg)" />
@@ -404,8 +667,10 @@
         <!-- ESCALATED loops back to ROUTING -->
         <path d="M 50 294 Q 20 294 20 200 Q 20 114 270 114" stroke="hsl(330,85%,60%)" stroke-width="1.2" opacity=".4"
           fill="none" stroke-dasharray="5 4" marker-end="url(#sa)" />
+        <text x="96" y="104" text-anchor="middle" fill="hsl(220,12%,55%)" font-family="Inter,sans-serif" font-size="9"
+          opacity=".8">routed again, once</text>
         <!-- Branches down right: TIMED_OUT -->
-        <line x1="420" y1="218" x2="570" y2="270" stroke="hsl(220,12%,55%)" stroke-width="1.2" opacity=".5"
+        <line x1="420" y1="218" x2="550" y2="270" stroke="hsl(220,12%,55%)" stroke-width="1.2" opacity=".5"
           marker-end="url(#sa)" />
         <rect x="490" y="270" width="160" height="48" rx="12" stroke="url(#sgb)" stroke-width="1.5"
           fill="hsla(228,20%,14%,.8)" filter="url(#sg)" />
@@ -434,45 +699,48 @@
           opacity=".6">Any active → CANCELLED</text>
       </svg>
     </div>
-    <div class="grid-2 reveal" style="margin-top:2rem">
+    <div class="grid-2">
       <div class="card">
-        <h3>Terminal States</h3>
-        <p><code>DELIVERED</code> · <code>TIMED_OUT</code> · <code>CANCELLED</code> — Once reached, no further
-          transitions are possible.</p>
+        <h3>How a request ends</h3>
+        <p><code>DELIVERED</code>: answered, and the agent has the answer. <code>TIMED_OUT</code>: nobody answered, or
+          it could not be delivered. <code>CANCELLED</code>: the agent withdrew it.</p>
       </div>
       <div class="card">
-        <h3>Fallback Behaviors</h3>
-        <p><code>AUTO_APPROVE</code> · <code>AUTO_REJECT</code> · <code>ESCALATE</code> · <code>BLOCK</code> ·
-          <code>FAIL</code> · <code>SKIP</code> — Define what happens on timeout.
+        <h3>What happens at the deadline</h3>
+        <p>The agent chooses when it asks: <code>AUTO_REJECT</code>, <code>AUTO_APPROVE</code>, <code>ESCALATE</code>
+          to a second person, or simply time out (<code>BLOCK</code>, <code>FAIL</code>, <code>SKIP</code>).
         </p>
       </div>
     </div>
   </section>
 
-  <!-- TECH STACK -->
+  <!-- BUILT WITH -->
   <section id="stack">
     <div class="reveal">
-      <div class="section-label">Tech Stack</div>
-      <h2 class="section-title">Modern, minimal dependencies</h2>
+      <div class="section-label">Built with</div>
+      <h2 class="section-title">What it is made of</h2>
+      <p class="section-desc">108 tests. The end-to-end ones run the real server and the real binary against a
+        throwaway Postgres and a stand-in for Slack. The original TypeScript service is still in the repository for
+        reference.</p>
     </div>
     <div class="badge-grid reveal">
-      <span class="badge">⬢ Node.js (ES2022)</span>
-      <span class="badge">🔷 TypeScript (strict)</span>
-      <span class="badge">⚡ Fastify 5</span>
-      <span class="badge">🗄 SQLite (better-sqlite3)</span>
-      <span class="badge">✅ Zod validation</span>
-      <span class="badge">🆔 ULID identifiers</span>
-      <span class="badge">🔨 tsup bundler</span>
-      <span class="badge">🧪 Vitest (25 tests)</span>
-      <span class="badge">💬 Slack Web API</span>
-      <span class="badge">🏔 Alpine.js portal</span>
+      <span class="badge">Rust</span>
+      <span class="badge">Tokio</span>
+      <span class="badge">Axum</span>
+      <span class="badge">SQLx and Postgres</span>
+      <span class="badge">rmcp, the official MCP SDK</span>
+      <span class="badge">Slack Socket Mode</span>
+      <span class="badge">Obsidian Markdown</span>
+      <span class="badge">launchd</span>
+      <span class="badge">ULID identifiers</span>
     </div>
   </section>
 
   <!-- FOOTER -->
   <footer>
-    <p>MIT License · <a href="https://github.com/ipattis/HCP" target="_blank">GitHub</a> · Built for <a
-        href="https://github.com/ipattis" target="_blank">NanoClaw</a> and beyond</p>
+    <p>MIT License · <a href="https://github.com/Qanata/HCP" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      Built for <a href="https://github.com/ipattis" target="_blank" rel="noopener noreferrer">NanoClaw</a> and beyond
+    </p>
   </footer>
 
   <script src="app.js"></script>
