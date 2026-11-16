@@ -1,7 +1,8 @@
 //! Postgres persistence. All SQL in the application lives in this module.
 //!
 //! The schema is the one the TypeScript service created (version 1), plus a `vault_outbox`
-//! table (version 2), so this server can run against an existing HCP database.
+//! table (version 2) and idempotency keys scoped to their agent (version 3), so this server
+//! can run against an existing HCP database.
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -15,7 +16,7 @@ use sqlx::{PgConnection, Postgres, QueryBuilder, Row};
 
 use crate::domain::{ActorType, AuditEvent, CoordinationRequest, State, event, new_id};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// Serialises concurrent `ensure_schema` calls (two servers starting at once).
 const SCHEMA_LOCK_KEY: i64 = 0x4843_5001;
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS coordination_requests (
   timeout_policy  JSONB NOT NULL,
   routing_hints   JSONB NOT NULL,
   trace_id        TEXT,
-  idempotency_key TEXT UNIQUE,
+  idempotency_key TEXT,
   responder_id    TEXT NOT NULL,
   response_data   JSONB,
   responded_by    TEXT,
@@ -51,6 +52,9 @@ CREATE INDEX IF NOT EXISTS idx_cr_state        ON coordination_requests(state);
 CREATE INDEX IF NOT EXISTS idx_cr_agent_id     ON coordination_requests(agent_id);
 CREATE INDEX IF NOT EXISTS idx_cr_responder_id ON coordination_requests(responder_id);
 CREATE INDEX IF NOT EXISTS idx_cr_timeout_at   ON coordination_requests(timeout_at);
+-- Version 3: an idempotency key is unique per agent, not across all agents, so one agent
+-- can neither take another's keys nor learn which keys another has used.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cr_agent_idempotency ON coordination_requests(agent_id, idempotency_key);
 
 CREATE TABLE IF NOT EXISTS audit_events (
   event_id    TEXT PRIMARY KEY,
@@ -120,7 +124,7 @@ pub struct Updates {
 #[derive(Debug)]
 pub enum Inserted {
     Created,
-    /// The idempotency key was already used; this is the request that owns it.
+    /// The agent already used this idempotency key; this is the request it created.
     Existing(Box<CoordinationRequest>),
 }
 
@@ -210,6 +214,15 @@ impl Store {
 
         let version: Option<i32> =
             sqlx::query_scalar("SELECT version FROM schema_version LIMIT 1").fetch_optional(&mut *tx).await?;
+        if version.is_none_or(|found| found < 3) {
+            // Versions 1 and 2 made the key unique across agents. The constraint name is the
+            // one Postgres gives an inline `UNIQUE` on this column.
+            sqlx::query(
+                "ALTER TABLE coordination_requests DROP CONSTRAINT IF EXISTS coordination_requests_idempotency_key_key",
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
         match version {
             None => {
                 sqlx::query("INSERT INTO schema_version (version) VALUES ($1)")
@@ -232,8 +245,8 @@ impl Store {
 
     // ── Coordination requests ───────────────────────────────────────────────
 
-    /// Inserts a new request and its `CR_SUBMITTED` audit event atomically. If the
-    /// idempotency key is already taken nothing is written and the owning request is returned.
+    /// Inserts a new request and its `CR_SUBMITTED` audit event atomically. If the agent has
+    /// already used the idempotency key nothing is written and that request is returned.
     pub async fn insert_request(&self, cr: &CoordinationRequest) -> Result<Inserted, StoreError> {
         let mut tx = self.pool.begin().await?;
         let inserted = sqlx::query(
@@ -242,7 +255,7 @@ impl Store {
                 timeout_policy, routing_hints, trace_id, idempotency_key, responder_id,
                 submitted_at, updated_at, timeout_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-             ON CONFLICT (idempotency_key) DO NOTHING",
+             ON CONFLICT (agent_id, idempotency_key) DO NOTHING",
         )
         .bind(&cr.request_id)
         .bind(&cr.agent_id)
@@ -266,10 +279,12 @@ impl Store {
         if inserted == 0 {
             tx.rollback().await?;
             let key = cr.idempotency_key.as_deref().unwrap_or_default();
-            let existing = sqlx::query("SELECT * FROM coordination_requests WHERE idempotency_key = $1")
-                .bind(key)
-                .fetch_one(&self.pool)
-                .await?;
+            let existing =
+                sqlx::query("SELECT * FROM coordination_requests WHERE agent_id = $1 AND idempotency_key = $2")
+                    .bind(&cr.agent_id)
+                    .bind(key)
+                    .fetch_one(&self.pool)
+                    .await?;
             return Ok(Inserted::Existing(Box::new(request_from_row(&existing)?)));
         }
 

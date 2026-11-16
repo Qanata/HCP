@@ -39,7 +39,16 @@ pub async fn handle(engine: &Engine, payload: &Value) -> Option<Value> {
 
 /// Why this user may not answer this request right now, phrased for the user.
 fn refusal(engine: &Engine, cr: &CoordinationRequest, user: &SlackUser<'_>) -> Option<String> {
-    let responders = &engine.slack()?.config().responders;
+    let config = engine.slack()?.config();
+    let responders = &config.responders;
+    // New requests cannot name an unmapped responder; this covers ones created before that
+    // rule, which would otherwise be open to anyone in the channel.
+    if !config.allows_responder(&cr.responder_id) {
+        return Some(format!(
+            "Nobody may answer this request in Slack: its responder `{}` is not in HCP_SLACK_RESPONDERS.",
+            super::escape(&cr.responder_id.replace('`', "'"))
+        ));
+    }
     if let Some(allowed) = responders.get(&cr.responder_id).filter(|allowed| *allowed != user.id) {
         return Some(format!("Only <@{allowed}> can respond to this request."));
     }

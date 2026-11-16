@@ -150,6 +150,34 @@ async fn only_the_mapped_responder_may_answer_in_slack() {
     assert_eq!(hcp.peek(&id).await.state, State::Responded);
 }
 
+#[tokio::test]
+async fn an_agent_cannot_choose_its_own_approver_or_channel() {
+    let hcp = Harness::start(Options { responders: vec![("ops-lead", "U_OPS")], ..Options::default() }).await;
+    let agent = hcp.key("claude-code", &[]).await;
+
+    // An unmapped responder would let anyone in the channel answer: refused.
+    let (status, body) =
+        hcp.post("/v1/requests", &agent, &with(approval(), "/routing_hints/responder_id", json!("anyone"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["details"][0].as_str().unwrap().contains("HCP_SLACK_RESPONDERS"));
+
+    // So would escalating to one.
+    let escalates = with(
+        with(approval(), "/timeout_policy/fallback", json!("ESCALATE")),
+        "/timeout_policy/escalation_responder_id",
+        json!("anyone"),
+    );
+    assert_eq!(hcp.post("/v1/requests", &agent, &escalates).await.0, StatusCode::BAD_REQUEST);
+
+    // A channel the operator did not allow is refused; an allowed one is fine.
+    let elsewhere = with(approval(), "/routing_hints/slack_channel_id", json!("C_AGENT_PICKED"));
+    let (status, body) = hcp.post("/v1/requests", &agent, &elsewhere).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["details"][0].as_str().unwrap().contains("HCP_SLACK_ALLOWED_CHANNELS"));
+    let allowed = with(approval(), "/routing_hints/slack_channel_id", json!(common::EXTRA_CHANNEL));
+    assert_eq!(hcp.post("/v1/requests", &agent, &allowed).await.0, StatusCode::CREATED);
+}
+
 // ── Who may do what through the API ─────────────────────────────────────────
 
 #[tokio::test]
@@ -239,7 +267,7 @@ async fn requests_are_validated_and_authenticated() {
 }
 
 #[tokio::test]
-async fn an_idempotency_key_returns_the_original_request_and_is_private_to_its_agent() {
+async fn an_idempotency_key_returns_the_original_request_and_belongs_to_its_agent() {
     let hcp = Harness::start(Options { slack: SlackMode::Off, ..Options::default() }).await;
     let alice = hcp.key("alice", &[]).await;
     let bob = hcp.key("bob", &[]).await;
@@ -250,10 +278,12 @@ async fn an_idempotency_key_returns_the_original_request_and_is_private_to_its_a
     assert_eq!((first_status, second_status), (StatusCode::CREATED, StatusCode::OK));
     assert_eq!(first["request_id"], second["request_id"]);
 
-    // Another agent reusing the key must not be handed Alice's request.
-    let (status, leaked) = hcp.post("/v1/requests", &bob, &body).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(leaked.get("request_id").is_none());
+    // Keys belong to their agent: Bob using the same key gets a request of his own, and
+    // learns nothing about Alice's.
+    let (status, bobs) = hcp.post("/v1/requests", &bob, &body).await;
+    assert_eq!(status, StatusCode::CREATED, "{bobs}");
+    assert_ne!(bobs["request_id"], first["request_id"]);
+    assert_eq!(bobs["agent_id"], "bob");
 
     let (_, listed) = hcp.get("/v1/requests", &alice).await;
     assert_eq!(listed["requests"].as_array().unwrap().len(), 1);
@@ -423,6 +453,23 @@ async fn escalating_without_a_target_times_out() {
 // ── Delivery failures ───────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn without_slack_silence_is_not_taken_as_approval() {
+    let hcp = Harness::start(Options { slack: SlackMode::Off, ..Options::default() }).await;
+    let agent = hcp.key("claude-code", &[]).await;
+    let fallback = |name: &str| with(approval(), "/timeout_policy/fallback", json!(name));
+    let approves = hcp.submit(&agent, &fallback("AUTO_APPROVE")).await;
+    let rejects = hcp.submit(&agent, &fallback("AUTO_REJECT")).await;
+    hcp.wait_state(&approves, State::PendingResponse).await;
+    hcp.wait_state(&rejects, State::PendingResponse).await;
+
+    hcp.app.engine.tick(Utc::now() + Duration::seconds(601)).await;
+    let timed_out = hcp.peek(&approves).await;
+    assert_eq!((timed_out.state, timed_out.response_data), (State::TimedOut, None));
+    // Rejecting by default needs nobody's consent, so it still applies.
+    assert_eq!(hcp.peek(&rejects).await.response_data, Some(json!({ "decision": "rejected", "auto": true })));
+}
+
+#[tokio::test]
 async fn a_request_slack_never_showed_anyone_is_never_auto_approved() {
     let hcp = Harness::start(Options::default()).await;
     let agent = hcp.key("claude-code", &[]).await;
@@ -528,16 +575,46 @@ async fn notifications_are_logged_and_only_posted_when_a_channel_is_named() {
 
     // With no channel named, a notification goes to the log, not to Slack.
     let quiet = hcp.submit(&agent, &notification).await;
-    hcp.wait_state(&quiet, State::PendingResponse).await;
+    // Nobody is asked anything, so the notification is finished as soon as it is logged.
+    hcp.wait_state(&quiet, State::Delivered).await;
     assert!(hcp.slack.calls("chat.postMessage").is_empty());
     assert!(hcp.request_note(&quiet).await.contains("intent: NOTIFICATION"));
 
     // Naming a channel posts it there, without buttons.
     let loud = hcp.submit(&agent, &with(notification, "/routing_hints/slack_channel_id", json!("C_FEED"))).await;
-    hcp.wait_state(&loud, State::PendingResponse).await;
+    hcp.wait_state(&loud, State::Delivered).await;
     let posted = hcp.slack.wait_calls("chat.postMessage", 1).await.remove(0);
     assert_eq!(posted.body["channel"], "C_FEED");
     assert!(action_ids(&posted.body).is_empty());
+
+    // Its deadline passing changes nothing: no fallback, and the Slack message is left alone.
+    hcp.app.engine.tick(Utc::now() + Duration::seconds(601)).await;
+    assert_eq!(hcp.peek(&loud).await.state, State::Delivered);
+    assert_eq!(hcp.peek(&loud).await.response_data, None);
+    assert!(hcp.slack.calls("chat.update").is_empty());
+}
+
+#[tokio::test]
+async fn a_notification_left_pending_by_an_older_server_times_out_without_an_answer() {
+    let hcp = Harness::start(Options {
+        seed_sql: Some(format!(
+            "{}
+            INSERT INTO coordination_requests
+              (request_id, agent_id, intent, urgency, state, context_package, timeout_policy, routing_hints,
+               responder_id, submitted_at, updated_at, timeout_at)
+            VALUES ('01OLDNOTE', 'nanoclaw', 'NOTIFICATION', 'LOW', 'PENDING_RESPONSE',
+                    '{{\"summary\":\"Build finished\"}}', '{{\"timeout_seconds\":60,\"fallback\":\"AUTO_APPROVE\"}}',
+                    '{{\"responder_id\":\"ops-lead\"}}', 'ops-lead', now(), now(), now() + interval '1 minute');",
+            typescript_database("unused")
+        )),
+        ..Options::default()
+    })
+    .await;
+
+    hcp.app.engine.tick(Utc::now() + Duration::seconds(61)).await;
+    let note = hcp.peek("01OLDNOTE").await;
+    assert_eq!((note.state, note.response_data), (State::TimedOut, None));
+    assert!(hcp.slack.calls("chat.update").is_empty());
 }
 
 #[tokio::test]
@@ -798,7 +875,32 @@ async fn it_runs_against_a_database_created_by_the_typescript_service() {
     // The schema was upgraded in place.
     let pool = sqlx::PgPool::connect(&hcp.db_url).await.unwrap();
     let version: i32 = sqlx::query_scalar("SELECT version FROM schema_version").fetch_one(&pool).await.unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
+
+    // The old cross-agent uniqueness is gone: another agent may reuse a key `nanoclaw` used.
+    let other = hcp.key("other-agent", &[]).await;
+    let reused = with(approval(), "/idempotency_key", json!("old-key-1"));
+    assert_eq!(hcp.post("/v1/requests", &other, &reused).await.0, StatusCode::CREATED);
+    // While `nanoclaw` reusing it gets its original request back.
+    let (status, replayed) = hcp.post("/v1/requests", old_key, &reused).await;
+    assert_eq!((status, replayed["request_id"].as_str()), (StatusCode::OK, Some("01OLDDELIVERED")));
+}
+
+#[tokio::test]
+async fn an_older_request_for_an_unmapped_responder_cannot_be_answered_by_anyone() {
+    let old_key = "hcp_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let hcp = Harness::start(Options {
+        responders: vec![("isaac", "U_ISAAC")],
+        seed_sql: Some(typescript_database(&hcp::store::hash_api_key(old_key))),
+        ..Options::default()
+    })
+    .await;
+
+    // 01OLDPENDING is addressed to `ops-lead`, who is not mapped to anyone in Slack.
+    hcp.slack_interaction(&hcp.click(ACTION_APPROVE, "01OLDPENDING", "U_ISAAC", "isaac")).await;
+    let told = hcp.slack.wait_calls("response_url", 1).await.remove(0);
+    assert!(told.body["text"].as_str().unwrap().contains("not in HCP_SLACK_RESPONDERS"), "{}", told.body);
+    assert_eq!(hcp.peek("01OLDPENDING").await.state, State::PendingResponse);
 }
 
 #[tokio::test]

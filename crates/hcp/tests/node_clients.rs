@@ -1,8 +1,9 @@
 //! The Claude Code hook and the MCP server now exist in Rust (`hcp hook`, `hcp mcp`; see
-//! `agents.rs`). The Node originals (`scripts/hcp-hook.js`, `src/mcp-server.ts`) are still in
-//! the repository, and these tests drive them, unmodified, against this server to show the
-//! API stays compatible with them. They are skipped when Node or the scripts are absent,
-//! and should be deleted together with the Node code.
+//! `agents.rs`). The Node originals are archived in `archive/typescript/` (`scripts/hcp-hook.js`,
+//! `src/mcp-server.ts`), and these tests drive them, unmodified, against this server to show
+//! the API stays compatible with agents still running them. They are skipped when Node or
+//! the scripts are absent (the MCP test also needs `npm install` in the archive), and should
+//! be deleted together with the archive.
 
 mod common;
 
@@ -16,14 +17,15 @@ use serde_json::{Value, json};
 use common::{CHANNEL, Call, Harness, Options, block_text, eventually};
 use hcp::slack::{ACTION_APPROVE, ACTION_REJECT, ACTION_RESPOND};
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+/// Where the archived TypeScript service lives.
+fn typescript_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../archive/typescript").canonicalize().unwrap()
 }
 
 /// Whether the Node pieces a test needs are available; says why not when skipping.
 fn available(test: &str, paths: &[&str]) -> bool {
     let node = Command::new("node").arg("--version").output().is_ok_and(|output| output.status.success());
-    let missing: Vec<_> = paths.iter().filter(|path| !repo_root().join(path).exists()).collect();
+    let missing: Vec<_> = paths.iter().filter(|path| !typescript_root().join(path).exists()).collect();
     if node && missing.is_empty() {
         return true;
     }
@@ -45,7 +47,7 @@ fn request_id(posted: &Call) -> String {
 /// Runs the Claude Code hook for one Bash command and returns how it exited.
 fn run_hook(hcp: &Harness, key: &str, command: &str) -> std::thread::JoinHandle<Output> {
     let mut child = Command::new("node")
-        .arg(repo_root().join("scripts/hcp-hook.js"))
+        .arg(typescript_root().join("scripts/hcp-hook.js"))
         .env("HCP_BASE_URL", hcp.app.base_url())
         .env("HCP_API_KEY", key)
         .env("HCP_RESPONDER", "isaac")
@@ -100,9 +102,9 @@ async fn the_existing_mcp_server_coordinates_through_slack() {
     let hcp = Harness::start(Options::default()).await;
     let key = hcp.key("hermes", &[]).await;
 
-    let mut server = Command::new(repo_root().join("node_modules/.bin/tsx"))
+    let mut server = Command::new(typescript_root().join("node_modules/.bin/tsx"))
         .arg("src/mcp-server.ts")
-        .current_dir(repo_root())
+        .current_dir(typescript_root())
         .env("HCP_BASE_URL", hcp.app.base_url())
         .env("HCP_API_KEY", &key)
         .env("HCP_RESPONDER", "isaac")

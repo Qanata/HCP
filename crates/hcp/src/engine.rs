@@ -23,10 +23,11 @@ const SYSTEM: &str = "system";
 pub enum EngineError {
     #[error("request not found")]
     NotFound,
-    #[error("idempotency key is already in use")]
-    IdempotencyKeyTaken,
     #[error("cannot {action} a request in state {state}")]
     WrongState { action: &'static str, state: State },
+    /// The request names a responder or channel this server does not allow.
+    #[error("request refused: {}", .0.join("; "))]
+    Refused(Vec<String>),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -67,6 +68,37 @@ pub fn destination(cr: &CoordinationRequest, slack: Option<&SlackConfig>) -> Des
             None => Destination::LogOnly,
         }
     }
+}
+
+/// Checks the routing an agent chose against what the server allows. Agents pick their own
+/// responder and channel, so without this an agent could name an unmapped responder (whom
+/// anyone may stand in for) or a channel of its choosing, and so choose its own approver.
+pub fn routing_problems(input: &CreateRequest, slack: Option<&SlackConfig>) -> Vec<String> {
+    let Some(slack) = slack else {
+        return Vec::new();
+    };
+    let mut problems = Vec::new();
+    let mut responder = |field: &str, id: &str| {
+        if !slack.allows_responder(id) {
+            problems.push(format!("{field} {id:?} is not a configured responder (see HCP_SLACK_RESPONDERS)"));
+        }
+    };
+    responder("routing_hints.responder_id", &input.routing_hints.responder_id);
+    if input.timeout_policy.fallback == Fallback::Escalate
+        && let Some(target) = input.timeout_policy.escalation_responder_id.as_deref()
+    {
+        responder("timeout_policy.escalation_responder_id", target);
+    }
+    if input.routing_hints.channel == Channel::Slack
+        && let Some(channel) = input.routing_hints.slack_channel_id.as_deref().map(str::trim)
+        && !channel.is_empty()
+        && !slack.allows_channel(channel)
+    {
+        problems.push(format!(
+            "routing_hints.slack_channel_id {channel:?} is not an allowed channel (see HCP_SLACK_ALLOWED_CHANNELS)"
+        ));
+    }
+    problems
 }
 
 /// Who is answering a request.
@@ -139,7 +171,10 @@ impl Engine {
         let updated = self.inner.store.transition(t).await?;
         tracing::debug!(request_id = %updated.request_id, state = %updated.state, "state changed");
         self.announce(&updated);
-        if matches!(updated.state, State::Responded | State::TimedOut | State::Cancelled) {
+        // A notification's message has nothing to retire: it never had buttons.
+        if updated.intent.needs_response()
+            && matches!(updated.state, State::Responded | State::TimedOut | State::Cancelled)
+        {
             let (engine, cr, user) = (self.clone(), updated.clone(), slack_user.map(str::to_string));
             tokio::spawn(async move { engine.refresh_slack_message(&cr, user.as_deref()).await });
         }
@@ -162,6 +197,10 @@ impl Engine {
         agent_id: &str,
         input: CreateRequest,
     ) -> Result<(CoordinationRequest, bool), EngineError> {
+        let problems = routing_problems(&input, self.slack().map(SlackClient::config));
+        if !problems.is_empty() {
+            return Err(EngineError::Refused(problems));
+        }
         let now = Utc::now();
         let timeout_at = input.timeout_policy.deadline_from(now).unwrap_or(DateTime::<Utc>::MAX_UTC);
         let cr = CoordinationRequest {
@@ -187,9 +226,7 @@ impl Engine {
         };
 
         match self.inner.store.insert_request(&cr).await? {
-            Inserted::Existing(existing) if existing.agent_id == agent_id => Ok((*existing, false)),
-            // Keys are unique across agents in the schema; never hand one agent another's request.
-            Inserted::Existing(_) => Err(EngineError::IdempotencyKeyTaken),
+            Inserted::Existing(existing) => Ok((*existing, false)),
             Inserted::Created => {
                 self.announce(&cr);
                 let (engine, submitted) = (self.clone(), cr.clone());
@@ -329,7 +366,8 @@ impl Engine {
 
     /// Delivers a request that is in `ROUTING`. It only becomes `PENDING_RESPONSE` once it
     /// has actually been delivered; a failed Slack post leaves it in `ROUTING` for the
-    /// scheduler to retry, so a request nobody saw can never be auto-approved.
+    /// scheduler to retry. Together with the check in [`Engine::apply_fallback`] (for servers
+    /// without Slack), a request nobody saw can never be auto-approved.
     async fn deliver(&self, cr: CoordinationRequest) {
         let destination = destination(&cr, self.slack().map(SlackClient::config));
         let (payload, posted) = match (&destination, self.slack()) {
@@ -356,16 +394,22 @@ impl Engine {
             _ => (json!({ "channel": "api", "responder_id": cr.responder_id }), false),
         };
 
+        // A notification is finished once it is out; anything else now waits on a human.
+        let (to, updates) = if cr.intent.needs_response() {
+            (State::PendingResponse, Updates::default())
+        } else {
+            (State::Delivered, Updates { delivered_at: Some(Utc::now()), ..Updates::default() })
+        };
         let pending = self
             .apply(
                 Transition {
                     request_id: &cr.request_id,
                     from: State::Routing,
-                    to: State::PendingResponse,
+                    to,
                     actor: SYSTEM,
                     actor_type: ActorType::System,
                     payload,
-                    updates: Updates::default(),
+                    updates,
                 },
                 None,
             )
@@ -378,7 +422,9 @@ impl Engine {
                     self.refresh_slack_message(&current, None).await;
                 }
             }
-            Err(err) => tracing::error!(request_id = %cr.request_id, error = %err, "failed to mark request pending"),
+            Err(err) => {
+                tracing::error!(request_id = %cr.request_id, to = %to, error = %err, "failed to finish delivery")
+            }
         }
     }
 
@@ -502,6 +548,11 @@ impl Engine {
     async fn expire(&self, cr: CoordinationRequest, now: DateTime<Utc>) {
         let fallback = cr.timeout_policy.fallback;
         match cr.state {
+            // Notifications from before they were settled on delivery: there was never a
+            // question, so there is no answer to fill in.
+            State::PendingResponse if !cr.intent.needs_response() => {
+                self.time_out(&cr, Some("notification")).await;
+            }
             State::PendingResponse => self.apply_fallback(cr, now).await,
             // Never reached a human, so the fallback does not apply: it simply times out.
             State::Routing | State::Escalated => {
@@ -522,6 +573,11 @@ impl Engine {
     async fn apply_fallback(&self, cr: CoordinationRequest, now: DateTime<Utc>) {
         let fallback = cr.timeout_policy.fallback;
         match fallback {
+            // Only Slack shows a request to a person. Without a Slack message nobody is known
+            // to have seen it (Slack is not configured), so silence cannot count as consent.
+            Fallback::AutoApprove if !self.was_shown_in_slack(&cr).await => {
+                self.time_out(&cr, Some("never_shown_in_slack")).await;
+            }
             Fallback::AutoApprove | Fallback::AutoReject => {
                 let (decision, by) = match fallback {
                     Fallback::AutoApprove => ("approved", "system:auto_approve"),
@@ -543,6 +599,16 @@ impl Engine {
                 None => self.time_out(&cr, Some("no_escalation_target")).await,
             },
             Fallback::Block | Fallback::Fail | Fallback::Skip => self.time_out(&cr, None).await,
+        }
+    }
+
+    async fn was_shown_in_slack(&self, cr: &CoordinationRequest) -> bool {
+        match self.inner.store.slack_message(&cr.request_id).await {
+            Ok(message) => message.is_some(),
+            Err(err) => {
+                tracing::error!(request_id = %cr.request_id, error = %err, "failed to look up Slack message");
+                false
+            }
         }
     }
 
@@ -625,6 +691,40 @@ mod tests {
         let (cfg, mut cr) = (config(), request(Intent::Approval));
         cr.routing_hints.slack_channel_id = Some("C_OPS".into());
         assert_eq!(destination(&cr, Some(&cfg)), Destination::Slack("C_OPS".into()));
+    }
+
+    fn create(responder: &str, channel: Option<&str>) -> CreateRequest {
+        let mut body = serde_json::json!({
+            "intent": "APPROVAL",
+            "urgency": "HIGH",
+            "context_package": { "summary": "Deploy" },
+            "timeout_policy": { "timeout_seconds": 600, "fallback": "ESCALATE", "escalation_responder_id": "isaac" },
+            "routing_hints": { "responder_id": responder },
+        });
+        if let Some(channel) = channel {
+            body["routing_hints"]["slack_channel_id"] = serde_json::json!(channel);
+        }
+        serde_json::from_value(body).unwrap()
+    }
+
+    #[test]
+    fn agents_cannot_choose_an_unmapped_responder_or_an_unlisted_channel() {
+        let cfg = config();
+        assert!(routing_problems(&create("isaac", None), Some(&cfg)).is_empty());
+        assert!(routing_problems(&create("isaac", Some("C_APPROVALS")), Some(&cfg)).is_empty());
+        assert!(routing_problems(&create("isaac", Some("C_OPS")), Some(&cfg)).is_empty());
+        assert_eq!(routing_problems(&create("anyone", Some("C_MINE")), Some(&cfg)).len(), 2);
+
+        let mut escalates_to_stranger = create("isaac", None);
+        escalates_to_stranger.timeout_policy.escalation_responder_id = Some("stranger".into());
+        assert_eq!(routing_problems(&escalates_to_stranger, Some(&cfg)).len(), 1);
+
+        // With nobody mapped, any responder name is accepted; channels are still checked.
+        let open = SlackConfig { responders: Default::default(), ..config() };
+        assert!(routing_problems(&create("anyone", None), Some(&open)).is_empty());
+        assert_eq!(routing_problems(&create("anyone", Some("C_MINE")), Some(&open)).len(), 1);
+        // Without Slack there is nothing to route to, so nothing to refuse.
+        assert!(routing_problems(&create("anyone", Some("C_MINE")), None).is_empty());
     }
 
     #[test]

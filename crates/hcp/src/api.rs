@@ -97,7 +97,7 @@ impl From<EngineError> for ApiError {
     fn from(err: EngineError) -> Self {
         match err {
             EngineError::NotFound => Self::not_found(),
-            EngineError::IdempotencyKeyTaken => Self::new(StatusCode::CONFLICT, "Idempotency key is already in use"),
+            EngineError::Refused(problems) => Self::validation(problems),
             EngineError::WrongState { action, state } => {
                 Self::new(StatusCode::CONFLICT, format!("Cannot {action} CR in state {state}"))
             }

@@ -120,15 +120,17 @@ impl HcpTools {
     async fn notify(&self, args: JsonObject) -> Result<Value, ClientError> {
         let body = self.with_default_routing(
             json!({
-                "intent": "NOTIFICATION",
-                "urgency": args.get("urgency").and_then(Value::as_str).unwrap_or("LOW"),
-                "context_package": {
-                    "summary": args.get("summary").cloned().unwrap_or(Value::Null),
-                    "detail": args.get("detail").filter(|v| !v.is_null()),
-                    "metadata": args.get("metadata").filter(|v| !v.is_null()),
-                },
-                "timeout_policy": { "timeout_seconds": 3600, "fallback": "AUTO_APPROVE" },
-            })
+                    "intent": "NOTIFICATION",
+                    "urgency": args.get("urgency").and_then(Value::as_str).unwrap_or("LOW"),
+                    "context_package": {
+                        "summary": args.get("summary").cloned().unwrap_or(Value::Null),
+                        "detail": args.get("detail").filter(|v| !v.is_null()),
+                        "metadata": args.get("metadata").filter(|v| !v.is_null()),
+                    },
+                    // Settled as soon as it is posted; the policy only bounds how long a failing
+            // delivery is retried.
+            "timeout_policy": { "timeout_seconds": 3600, "fallback": "SKIP" },
+                })
             .as_object()
             .cloned()
             .unwrap_or_default(),
@@ -254,7 +256,7 @@ fn routing_hints() -> Value {
         "description": "Optional. Leave out to use the configured default responder and channel.",
         "properties": {
             "responder_id": { "type": "string", "description": "Who should respond. Use the configured default unless you know a better person." },
-            "slack_channel_id": { "type": "string", "description": "Slack channel ID to post in, instead of the default approvals channel." },
+            "slack_channel_id": { "type": "string", "description": "Slack channel ID to post in, instead of the default approvals channel. Must be a channel the server allows." },
         },
     })
 }

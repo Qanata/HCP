@@ -104,7 +104,7 @@ async fn the_hook_gates_destructive_commands_on_a_human_decision() {
     // Rejected: exit 2, with the reason on stderr for Claude.
     let (code, stdout, stderr) = finish(rejected).await;
     assert_eq!((code, stdout.as_str()), (Some(2), ""), "{stderr}");
-    assert!(stderr.contains("a human reviewer (slack:isaac) did not approve this command"), "{stderr}");
+    assert!(stderr.contains("a human reviewer (slack:isaac) did not approve this"), "{stderr}");
 
     // The request tells the reviewer which session and directory it came from.
     let requests = all_requests(&hcp).await;
@@ -135,10 +135,60 @@ async fn the_hook_blocks_when_nobody_answers_in_time() {
 
     let (code, _, stderr) = run_hook(command, &bash_event("terraform destroy")).await;
     assert_eq!(code, Some(2), "{stderr}");
-    assert!(stderr.contains("nobody approved this command within 1s"), "{stderr}");
+    assert!(stderr.contains("nobody approved this within 1s"), "{stderr}");
     // The Slack message no longer offers buttons for a decision that has been made.
     let updated = hcp.slack.wait_calls("chat.update", 1).await.remove(0);
     assert!(block_text(&updated.body).contains("Rejected automatically"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_hook_will_not_let_the_agent_change_its_own_files_unasked() {
+    let hcp = Harness::start(Options::default()).await;
+    let key = hcp.key("claude-code", &[]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env_file = dir.path().join("claude-code.env");
+    let wrapper = dir.path().join("wrappers/hcp-hook.sh");
+    std::fs::write(&env_file, format!("HCP_API_KEY={key}\nHCP_HOOK_TIMEOUT=1\nHCP_HOOK_MODE=gate_only\n")).unwrap();
+    let hook = |event: &Value| {
+        let mut command = hcp_command(&hcp, None);
+        command.arg("--env-file").arg(&env_file).env("HCP_HOOK_PROTECTED_PATHS", dir.path().join("wrappers"));
+        start_hook(command, event)
+    };
+    let write = |path: &Path| {
+        json!({ "hook_event_name": "PreToolUse", "tool_name": "Write", "cwd": "/repo",
+                "tool_input": { "file_path": path, "content": "HCP_HOOK_ON_ERROR=allow" } })
+    };
+
+    let attempts = [
+        hook(&write(&env_file)),
+        hook(&write(Path::new(env!("CARGO_BIN_EXE_hcp")))),
+        hook(&write(&wrapper)),
+        hook(&bash_event(&format!("echo HCP_HOOK_MODE=gate_only >> {}", env_file.display()))),
+    ];
+    // Even in gate_only mode an ordinary write passes without asking anyone.
+    let (code, _, stderr) = run_hook(
+        {
+            let mut command = hcp_command(&hcp, None);
+            command.arg("--env-file").arg(&env_file);
+            command
+        },
+        &write(Path::new("/repo/src/main.rs")),
+    )
+    .await;
+    assert_eq!(code, Some(0), "{stderr}");
+
+    // Each of the others had to be approved, and nobody did.
+    for attempt in attempts {
+        let (code, _, stderr) = finish(attempt).await;
+        assert_eq!(code, Some(2), "{stderr}");
+        assert!(stderr.contains("nobody approved this within 1s"), "{stderr}");
+    }
+    let mut summaries: Vec<String> =
+        all_requests(&hcp).await.into_iter().map(|cr| cr.context_package.summary).collect();
+    summaries.sort();
+    assert_eq!(summaries.len(), 4, "{summaries:?}");
+    assert!(summaries.iter().any(|s| s.contains("claude-code.env") && s.contains("controls how it is supervised")));
+    assert!(summaries.iter().any(|s| s.starts_with("Claude Code wants to run: `echo HCP_HOOK_MODE")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -438,6 +488,7 @@ async fn the_other_tools_notify_submit_poll_and_cancel() {
     let notification = hcp.peek(notified["request_id"].as_str().unwrap()).await;
     assert_eq!((notification.intent, notification.responder_id.as_str()), (Intent::Notification, "isaac"));
     assert_eq!(notification.context_package.summary, "Starting the migration");
+    hcp.wait_state(&notification.request_id, State::Delivered).await;
 
     mcp.call(2, "hcp_submit", question());
     let submitted = mcp.result(2).await;

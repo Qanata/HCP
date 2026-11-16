@@ -129,7 +129,7 @@ async function notify(summary, metadata = {}) {
     intent: "NOTIFICATION",
     urgency: "LOW",
     context_package: { summary, metadata },
-    timeout_policy: { timeout_seconds: 3600, fallback: "AUTO_APPROVE" },
+    timeout_policy: { timeout_seconds: 3600, fallback: "SKIP" },
     routing_hints: routingHints(),
   });
 }
