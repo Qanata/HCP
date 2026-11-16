@@ -923,3 +923,106 @@ async fn an_expired_request_is_settled_when_its_agent_reads_it() {
     let updated = hcp.slack.wait_calls("chat.update", 1).await.remove(0);
     assert!(block_text(&updated.body).contains("Rejected automatically"));
 }
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_dashboard_endpoints_report_outcomes_and_connector_health_to_admins_only() {
+    let hcp = Harness::start(Options::default()).await;
+    let agent = hcp.key("claude-code", &[]).await;
+    let console = hcp.key("console", &["respond"]).await;
+    let admin = hcp.key("hcp-desktop", &["admin"]).await;
+
+    // One request for each outcome.
+    let approved = hcp.submit(&agent, &approval()).await;
+    let rejected = hcp.submit(&agent, &approval()).await;
+    let answered = hcp.submit(&agent, &with(approval(), "/intent", json!("CLARIFICATION"))).await;
+    let expires = hcp.submit(&agent, &with(approval(), "/timeout_policy/timeout_seconds", json!(60))).await;
+    let cancelled = hcp.submit(&agent, &approval()).await;
+    let open = hcp.submit(&agent, &approval()).await;
+    let notified = hcp.submit(&agent, &with(approval(), "/intent", json!("NOTIFICATION"))).await;
+    for id in [&approved, &rejected, &answered, &expires, &cancelled, &open] {
+        hcp.wait_state(id, State::PendingResponse).await;
+    }
+    hcp.wait_state(&notified, State::Delivered).await;
+    hcp.slack_interaction(&hcp.click(ACTION_APPROVE, &approved, "U_ISAAC", "isaac")).await;
+    hcp.slack_interaction(&hcp.click(ACTION_REJECT, &rejected, "U_ISAAC", "isaac")).await;
+    let text = json!({ "response_data": { "text": "Use Postgres" }, "responded_by": "ops-lead" });
+    assert_eq!(hcp.post(&format!("/v1/requests/{answered}/respond"), &console, &text).await.0, StatusCode::OK);
+    hcp.delete(&format!("/v1/requests/{cancelled}"), &agent).await;
+    hcp.app.engine.tick(Utc::now() + Duration::seconds(61)).await;
+    assert_eq!(hcp.peek(&expires).await.state, State::Responded);
+
+    // Only an admin key may read any of it.
+    for path in ["/v1/metrics", "/v1/status"] {
+        assert_eq!(hcp.get(path, &agent).await.0, StatusCode::FORBIDDEN, "{path}");
+    }
+    assert_eq!(hcp.post("/v1/status/vault/test", &agent, &json!({})).await.0, StatusCode::FORBIDDEN);
+
+    let (status, metrics) = hcp.get("/v1/metrics?days=7&tz=Europe/London", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{metrics}");
+    let totals = &metrics["totals"];
+    for (outcome, expected) in [
+        ("approved", 1),
+        ("rejected", 1),
+        ("answered", 1),
+        ("auto_rejected", 1),
+        ("cancelled", 1),
+        ("open", 1),
+        ("notification", 1),
+        ("auto_approved", 0),
+        ("timed_out", 0),
+    ] {
+        assert_eq!(totals[outcome], expected, "{outcome}: {totals}");
+    }
+    let daily = metrics["daily"].as_array().unwrap();
+    assert_eq!(daily.len(), 7);
+    let today: i64 = daily.last().unwrap()["counts"].as_object().unwrap().values().map(|n| n.as_i64().unwrap()).sum();
+    assert_eq!(today, 7);
+    assert_eq!(metrics["by_agent"][0]["key"], "claude-code");
+    assert_eq!(metrics["by_agent"][0]["total"], 7);
+    assert_eq!(metrics["response_times"]["count"], 3, "two Slack answers and one API answer");
+    assert!(metrics["response_times"]["median_seconds"].as_f64().unwrap() >= 0.0);
+    let responders: Vec<&str> =
+        metrics["responders"].as_array().unwrap().iter().map(|r| r["responded_by"].as_str().unwrap()).collect();
+    assert!(responders.contains(&"slack:isaac") && responders.contains(&"ops-lead"), "{responders:?}");
+    let open_ids: Vec<&str> =
+        metrics["open"].as_array().unwrap().iter().map(|r| r["request_id"].as_str().unwrap()).collect();
+    assert_eq!(open_ids, [open.as_str()]);
+    assert!(!metrics["recent"].as_array().unwrap().is_empty());
+
+    assert_eq!(hcp.get("/v1/metrics?tz=Mars/Olympus", &admin).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(hcp.get("/v1/metrics?days=0", &admin).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(hcp.get("/v1/metrics?days=91", &admin).await.0, StatusCode::BAD_REQUEST);
+
+    let (status, report) = hcp.get("/v1/status", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["database"]["ok"], true);
+    assert_eq!(report["database"]["schema_version"], 3);
+    assert_eq!(report["database"]["requests"], 7);
+    assert_eq!(report["slack"]["mode"], "http");
+    assert_eq!(report["slack"]["identity"]["team"], "Acme");
+    assert!(report["slack"]["api"]["last_ok_at"].is_string());
+    assert_eq!(report["vault"]["looks_like_obsidian"], true);
+    // Nothing secret is reported.
+    let printed = report.to_string();
+    assert!(!printed.contains(BOT_TOKEN) && !printed.contains(common::SIGNING_SECRET) && !printed.contains("password"));
+
+    for connector in ["database", "slack", "vault"] {
+        let (status, tested) = hcp.post(&format!("/v1/status/{connector}/test"), &admin, &json!({})).await;
+        assert_eq!((status, &tested["ok"]), (StatusCode::OK, &json!(true)), "{tested}");
+    }
+    assert_eq!(hcp.post("/v1/status/nonsense/test", &admin, &json!({})).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn connector_tests_report_what_is_not_configured() {
+    let hcp = Harness::start(Options { slack: SlackMode::Off, ..Options::default() }).await;
+    let admin = hcp.key("hcp-desktop", &["admin"]).await;
+    let (_, report) = hcp.get("/v1/status", &admin).await;
+    assert_eq!(report["slack"], json!({ "configured": false }));
+    let (status, tested) = hcp.post("/v1/status/slack/test", &admin, &json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tested["ok"], false);
+    assert!(tested["message"].as_str().unwrap().contains("not configured"));
+}

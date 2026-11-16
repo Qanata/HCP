@@ -1,0 +1,31 @@
+[package]
+name = "hcp-desktop"
+description = "HCP desktop dashboard: metrics, live requests and connector health"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hcp-desktop"
+path = "src/main.rs"
+
+[features]
+# Serve the UI from the files embedded in the binary rather than a dev server. The Tauri
+# CLI turns this on for release builds; this app is built with plain cargo, so it is
+# always on.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "stream"] }
+security-framework = "3.7.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = { version = "2.12.5", features = ["tray-icon", "image-png"] }
+tokio = { version = "1.54.1", features = ["sync", "time", "process", "macros"] }

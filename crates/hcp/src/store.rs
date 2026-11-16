@@ -8,6 +8,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
@@ -183,6 +184,9 @@ pub fn generate_api_key() -> String {
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
+    /// Where the database is, for display. Never the password.
+    host: String,
+    database: String,
     /// Whether audit events are queued for the vault. Off when no vault is configured, so
     /// the outbox cannot grow without a consumer.
     outbox: bool,
@@ -191,12 +195,13 @@ pub struct Store {
 impl Store {
     pub async fn connect(database_url: &str, max_connections: u32, outbox: bool) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_str(database_url)?;
+        let (host, database) = (options.get_host().to_string(), options.get_database().unwrap_or_default().to_string());
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(10))
             .connect_with(options)
             .await?;
-        Ok(Self { pool, outbox })
+        Ok(Self { pool, host, database, outbox })
     }
 
     pub async fn close(&self) {
@@ -634,6 +639,345 @@ impl Store {
             .rows_affected();
         Ok(revoked == 1)
     }
+}
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+
+/// How a request ended (or that it has not), as one SQL expression over a row of
+/// `coordination_requests`. Every dashboard figure is built from this, so they agree.
+const OUTCOME: &str = "CASE
+    WHEN intent = 'NOTIFICATION' THEN 'notification'
+    WHEN state IN ('SUBMITTED', 'ROUTING', 'PENDING_RESPONSE', 'ESCALATED') THEN 'open'
+    WHEN state = 'CANCELLED' THEN 'cancelled'
+    WHEN state = 'TIMED_OUT' THEN 'timed_out'
+    WHEN response_data -> 'auto' = 'true'::jsonb AND response_data ->> 'decision' = 'approved' THEN 'auto_approved'
+    WHEN response_data -> 'auto' = 'true'::jsonb THEN 'auto_rejected'
+    WHEN response_data ->> 'decision' = 'approved' THEN 'approved'
+    WHEN response_data ->> 'decision' = 'rejected' THEN 'rejected'
+    ELSE 'answered'
+  END";
+
+/// Answered by a person, as opposed to by a timeout policy.
+const HUMAN_ANSWER: &str = "responded_at IS NOT NULL AND intent <> 'NOTIFICATION'
+  AND NOT coalesce(response_data -> 'auto' = 'true'::jsonb, false)";
+
+/// Every outcome, in the order the dashboard shows them.
+pub const OUTCOMES: [&str; 10] = [
+    "approved",
+    "rejected",
+    "answered",
+    "auto_approved",
+    "auto_rejected",
+    "timed_out",
+    "cancelled",
+    "open",
+    "notification",
+    "other",
+];
+
+/// Request counts keyed by outcome; outcomes with no requests are present as zero.
+pub type Counts = std::collections::BTreeMap<String, i64>;
+
+fn counts(rows: impl IntoIterator<Item = (String, i64)>) -> Counts {
+    let mut counts: Counts = OUTCOMES.iter().map(|o| (o.to_string(), 0)).collect();
+    for (outcome, n) in rows {
+        *counts.entry(outcome).or_default() += n;
+    }
+    counts
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Day {
+    pub date: chrono::NaiveDate,
+    pub counts: Counts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Group {
+    pub key: String,
+    pub total: i64,
+    pub counts: Counts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Responder {
+    pub responded_by: String,
+    pub total: i64,
+    pub median_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResponseTimes {
+    pub count: i64,
+    pub median_seconds: Option<f64>,
+    pub p90_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenRequest {
+    pub request_id: String,
+    pub agent_id: String,
+    pub intent: String,
+    pub urgency: String,
+    pub state: String,
+    pub summary: String,
+    pub responder_id: String,
+    #[serde(with = "crate::domain::timestamp")]
+    pub submitted_at: DateTime<Utc>,
+    #[serde(with = "crate::domain::timestamp")]
+    pub timeout_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentEvent {
+    pub event_id: String,
+    pub request_id: String,
+    pub event_type: String,
+    pub actor: String,
+    pub actor_type: String,
+    #[serde(with = "crate::domain::timestamp")]
+    pub created_at: DateTime<Utc>,
+    pub agent_id: String,
+    pub intent: String,
+    pub summary: String,
+}
+
+/// Everything the dashboard shows, for a window of whole days in one time zone.
+#[derive(Debug, Clone, Serialize)]
+pub struct Metrics {
+    pub days: i64,
+    pub time_zone: String,
+    /// The start of the first day of the window.
+    #[serde(with = "crate::domain::timestamp")]
+    pub since: DateTime<Utc>,
+    /// Requests submitted in the window, by outcome.
+    pub totals: Counts,
+    pub daily: Vec<Day>,
+    pub by_agent: Vec<Group>,
+    pub by_intent: Vec<Group>,
+    /// How long people took to answer, for requests a person answered.
+    pub response_times: ResponseTimes,
+    pub responders: Vec<Responder>,
+    /// Every request still waiting, soonest deadline first (not limited to the window).
+    pub open: Vec<OpenRequest>,
+    /// The latest audit events, newest first.
+    pub recent: Vec<RecentEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DatabaseStats {
+    pub host: String,
+    pub database: String,
+    pub server_version: String,
+    pub size_bytes: i64,
+    pub schema_version: Option<i32>,
+    pub requests: i64,
+    pub audit_events: i64,
+    pub api_keys: i64,
+    pub vault_outbox: i64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MetricsError {
+    #[error("unknown time zone {0:?}")]
+    UnknownTimeZone(String),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+impl Store {
+    pub async fn database_stats(&self) -> Result<DatabaseStats, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT current_setting('server_version') AS server_version,
+                    pg_database_size(current_database()) AS size_bytes,
+                    (SELECT version FROM schema_version LIMIT 1) AS schema_version,
+                    (SELECT count(*) FROM coordination_requests) AS requests,
+                    (SELECT count(*) FROM audit_events) AS audit_events,
+                    (SELECT count(*) FROM api_keys WHERE revoked_at IS NULL) AS api_keys,
+                    (SELECT count(*) FROM vault_outbox) AS vault_outbox",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(DatabaseStats {
+            host: self.host.clone(),
+            database: self.database.clone(),
+            server_version: row.try_get("server_version")?,
+            size_bytes: row.try_get("size_bytes")?,
+            schema_version: row.try_get("schema_version")?,
+            requests: row.try_get("requests")?,
+            audit_events: row.try_get("audit_events")?,
+            api_keys: row.try_get("api_keys")?,
+            vault_outbox: row.try_get("vault_outbox")?,
+        })
+    }
+
+    /// The dashboard's figures for the last `days` whole days (today included) in `time_zone`,
+    /// an IANA name such as `Europe/London`.
+    pub async fn metrics(&self, days: i64, time_zone: &str) -> Result<Metrics, MetricsError> {
+        let known: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)")
+            .bind(time_zone)
+            .fetch_one(&self.pool)
+            .await?;
+        if !known {
+            return Err(MetricsError::UnknownTimeZone(time_zone.to_string()));
+        }
+        let since: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT (date_trunc('day', now() AT TIME ZONE $1) - make_interval(days => $2::int - 1)) AT TIME ZONE $1",
+        )
+        .bind(time_zone)
+        .bind(days)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let window = format!("SELECT *, {OUTCOME} AS outcome FROM coordination_requests WHERE submitted_at >= $1");
+
+        let totals = counts(
+            sqlx::query_as::<_, (String, i64)>(trusted(format!(
+                "SELECT outcome, count(*) FROM ({window}) w GROUP BY outcome"
+            )))
+            .bind(since)
+            .fetch_all(&self.pool)
+            .await?,
+        );
+
+        let daily_rows: Vec<(chrono::NaiveDate, Option<String>, i64)> = sqlx::query_as(trusted(format!(
+            "WITH days AS (
+               SELECT generate_series(($1 AT TIME ZONE $2)::date, (now() AT TIME ZONE $2)::date, interval '1 day')::date AS day
+             ), w AS (
+               SELECT (submitted_at AT TIME ZONE $2)::date AS day, outcome FROM ({window}) r
+             )
+             SELECT d.day, w.outcome, count(w.outcome) FROM days d LEFT JOIN w ON w.day = d.day
+             GROUP BY d.day, w.outcome ORDER BY d.day"
+        )))
+        .bind(since)
+        .bind(time_zone)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut daily: Vec<Day> = Vec::new();
+        for (date, outcome, n) in daily_rows {
+            if daily.last().is_none_or(|day| day.date != date) {
+                daily.push(Day { date, counts: counts([]) });
+            }
+            if let (Some(outcome), Some(day)) = (outcome, daily.last_mut()) {
+                *day.counts.entry(outcome).or_default() += n;
+            }
+        }
+
+        let grouped =
+            |column: &str| format!("SELECT {column}, outcome, count(*) FROM ({window}) w GROUP BY {column}, outcome");
+        let by_agent = groups(sqlx::query_as(trusted(grouped("agent_id"))).bind(since).fetch_all(&self.pool).await?);
+        let by_intent = groups(sqlx::query_as(trusted(grouped("intent"))).bind(since).fetch_all(&self.pool).await?);
+
+        let (count, median_seconds, p90_seconds): (i64, Option<f64>, Option<f64>) = sqlx::query_as(trusted(format!(
+            "SELECT count(*),
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY seconds),
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY seconds)
+             FROM (SELECT extract(epoch FROM responded_at - submitted_at)::float8 AS seconds
+                   FROM coordination_requests WHERE submitted_at >= $1 AND {HUMAN_ANSWER}) t"
+        )))
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let responders = sqlx::query_as::<_, (String, i64, Option<f64>)>(trusted(format!(
+            "SELECT responded_by, count(*),
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM responded_at - submitted_at)::float8)
+             FROM coordination_requests WHERE submitted_at >= $1 AND {HUMAN_ANSWER} AND responded_by IS NOT NULL
+             GROUP BY responded_by ORDER BY count(*) DESC, responded_by LIMIT 20"
+        )))
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|(responded_by, total, median_seconds)| Responder { responded_by, total, median_seconds })
+        .collect();
+
+        let open = sqlx::query(
+            "SELECT request_id, agent_id, intent, urgency, state, context_package ->> 'summary' AS summary,
+                    responder_id, submitted_at, timeout_at
+             FROM coordination_requests
+             WHERE state IN ('SUBMITTED', 'ROUTING', 'PENDING_RESPONSE', 'ESCALATED')
+             ORDER BY timeout_at ASC, request_id LIMIT 100",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(OpenRequest {
+                request_id: row.try_get("request_id")?,
+                agent_id: row.try_get("agent_id")?,
+                intent: row.try_get("intent")?,
+                urgency: row.try_get("urgency")?,
+                state: row.try_get("state")?,
+                summary: row.try_get::<Option<String>, _>("summary")?.unwrap_or_default(),
+                responder_id: row.try_get("responder_id")?,
+                submitted_at: row.try_get("submitted_at")?,
+                timeout_at: row.try_get("timeout_at")?,
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()?;
+
+        let recent = sqlx::query(
+            "SELECT e.event_id, e.request_id, e.event_type, e.actor, e.actor_type, e.created_at,
+                    r.agent_id, r.intent, r.context_package ->> 'summary' AS summary
+             FROM audit_events e JOIN coordination_requests r ON r.request_id = e.request_id
+             ORDER BY e.created_at DESC, e.event_id DESC LIMIT 40",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(RecentEvent {
+                event_id: row.try_get("event_id")?,
+                request_id: row.try_get("request_id")?,
+                event_type: row.try_get("event_type")?,
+                actor: row.try_get("actor")?,
+                actor_type: row.try_get("actor_type")?,
+                created_at: row.try_get("created_at")?,
+                agent_id: row.try_get("agent_id")?,
+                intent: row.try_get("intent")?,
+                summary: row.try_get::<Option<String>, _>("summary")?.unwrap_or_default(),
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()?;
+
+        Ok(Metrics {
+            days,
+            time_zone: time_zone.to_string(),
+            since,
+            totals,
+            daily,
+            by_agent,
+            by_intent,
+            response_times: ResponseTimes { count, median_seconds, p90_seconds },
+            responders,
+            open,
+            recent,
+        })
+    }
+}
+
+/// Marks dashboard SQL as safe to run. Only constants from this module ([`OUTCOME`],
+/// [`HUMAN_ANSWER`], fixed column names) are ever spliced into it; every value is bound.
+fn trusted(sql: String) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(sql)
+}
+
+/// Folds `(key, outcome, count)` rows into one group per key, largest first.
+fn groups(rows: Vec<(String, String, i64)>) -> Vec<Group> {
+    let mut by_key: std::collections::BTreeMap<String, Vec<(String, i64)>> = Default::default();
+    for (key, outcome, n) in rows {
+        by_key.entry(key).or_default().push((outcome, n));
+    }
+    let mut groups: Vec<Group> = by_key
+        .into_iter()
+        .map(|(key, rows)| {
+            let counts = counts(rows);
+            Group { key, total: counts.values().sum(), counts }
+        })
+        .collect();
+    groups.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.key.cmp(&b.key)));
+    groups
 }
 
 fn decode_error(column: &str, source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> sqlx::Error {

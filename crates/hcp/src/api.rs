@@ -14,7 +14,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::{Stream, StreamExt, stream};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -26,7 +26,8 @@ use crate::domain::{
 };
 use crate::engine::{Answer, Engine, EngineError};
 use crate::slack;
-use crate::store::{ApiKey, AuditFilter, RequestFilter, StoreError};
+use crate::store::{ApiKey, AuditFilter, MetricsError, RequestFilter, StoreError};
+use crate::vault::Vault;
 
 /// Lets a key submit human responses through `POST /v1/requests/{id}/respond`.
 pub const SCOPE_RESPOND: &str = "respond";
@@ -39,12 +40,15 @@ const MAX_PAGE: i64 = 500;
 pub struct AppState {
     pub engine: Engine,
     pub shutdown: CancellationToken,
+    /// The vault being written to, for the status report.
+    pub vault: Option<Arc<Vault>>,
+    started_at: DateTime<Utc>,
     sse_clients: Arc<AtomicUsize>,
 }
 
 impl AppState {
-    pub fn new(engine: Engine, shutdown: CancellationToken) -> Self {
-        Self { engine, shutdown, sse_clients: Arc::new(AtomicUsize::new(0)) }
+    pub fn new(engine: Engine, shutdown: CancellationToken, vault: Option<Arc<Vault>>) -> Self {
+        Self { engine, shutdown, vault, started_at: Utc::now(), sse_clients: Arc::new(AtomicUsize::new(0)) }
     }
 }
 
@@ -56,6 +60,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/requests/{id}/respond", post(respond))
         .route("/v1/audit", get(audit))
         .route("/v1/events", get(events))
+        .route("/v1/status", get(status))
+        .route("/v1/status/{connector}/test", post(test_connector))
+        .route("/v1/metrics", get(metrics))
         .route("/slack/interactions", post(slack_interactions))
         .with_state(state)
 }
@@ -123,6 +130,14 @@ pub struct Caller(pub ApiKey);
 impl Caller {
     fn is_admin(&self) -> bool {
         self.0.has_scope(SCOPE_ADMIN)
+    }
+
+    fn require_admin(&self) -> Result<(), ApiError> {
+        if self.is_admin() {
+            Ok(())
+        } else {
+            Err(ApiError::new(StatusCode::FORBIDDEN, "This API key lacks the 'admin' scope"))
+        }
     }
 
     /// Agents see their own requests; nobody learns whether someone else's ID exists.
@@ -320,6 +335,140 @@ async fn events(State(state): State<AppState>, caller: Caller) -> Sse<impl Strea
         // Without this, open streams would hold graceful shutdown open forever.
         .take_until(state.shutdown.clone().cancelled_owned());
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+
+const MAX_METRICS_DAYS: i64 = 90;
+
+fn millis(started: std::time::Instant) -> f64 {
+    (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0
+}
+
+async fn database_status(state: &AppState) -> Value {
+    let started = std::time::Instant::now();
+    match state.engine.store().database_stats().await {
+        Ok(stats) => {
+            let mut body = json!({ "ok": true, "latency_ms": millis(started) });
+            if let (Some(body), Value::Object(stats)) = (body.as_object_mut(), json!(stats)) {
+                body.extend(stats);
+            }
+            body
+        }
+        Err(err) => json!({ "ok": false, "latency_ms": millis(started), "error": err.to_string() }),
+    }
+}
+
+fn slack_status(state: &AppState) -> Value {
+    let Some(slack) = state.engine.slack() else {
+        return json!({ "configured": false });
+    };
+    let config = slack.config();
+    let socket = config.app_token.is_some();
+    json!({
+        "configured": true,
+        "mode": if socket { "socket" } else { "http" },
+        "channel": config.channel,
+        "notify_channel": config.notify_channel,
+        "allowed_channels": config.allowed_channels,
+        "responders": config.responders,
+        "identity": slack.identity(),
+        "api": slack.api_health().snapshot(),
+        "socket": socket.then(|| slack.socket_health().snapshot()),
+    })
+}
+
+fn vault_status(state: &AppState) -> Value {
+    let Some(vault) = &state.vault else {
+        return json!({ "configured": false });
+    };
+    let (last_write_at, written) = vault.writes();
+    json!({
+        "configured": true,
+        "vault_path": vault.vault_path(),
+        "folder_path": vault.root(),
+        "looks_like_obsidian": vault.vault_path().join(".obsidian").is_dir(),
+        "health": vault.health(),
+        "last_write_at": last_write_at.as_ref().map(timestamp::format),
+        "written_since_start": written,
+    })
+}
+
+/// Connector health for the desktop dashboard. Names channels and responders, never
+/// secrets.
+async fn status(State(state): State<AppState>, caller: Caller) -> Result<Json<Value>, ApiError> {
+    caller.require_admin()?;
+    let now = Utc::now();
+    Ok(Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "started_at": timestamp::format(&state.started_at),
+        "uptime_seconds": (now - state.started_at).num_seconds(),
+        "sse_clients": state.sse_clients.load(Ordering::Relaxed),
+        "database": database_status(&state).await,
+        "slack": slack_status(&state),
+        "vault": vault_status(&state),
+    })))
+}
+
+/// Actively checks one connector: `database` (a round trip), `slack` (`auth.test`; nothing
+/// is posted) or `vault` (writes and removes a file in HCP's folder).
+async fn test_connector(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(connector): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    caller.require_admin()?;
+    let started = std::time::Instant::now();
+    let outcome: Result<String, String> = match connector.as_str() {
+        "database" => {
+            state.engine.store().ping().await.map(|()| "Database answered".to_string()).map_err(|err| err.to_string())
+        }
+        "slack" => match state.engine.slack() {
+            None => Err("Slack is not configured (SLACK_BOT_TOKEN is not set)".to_string()),
+            Some(slack) => slack
+                .auth_test()
+                .await
+                .map(|identity| format!("Connected as {} to {}", identity.bot, identity.team))
+                .map_err(|err| err.to_string()),
+        },
+        "vault" => match state.vault.clone() {
+            None => Err("No vault is configured (HCP_OBSIDIAN_VAULT is not set)".to_string()),
+            Some(vault) => tokio::task::spawn_blocking(move || vault.probe())
+                .await
+                .map_err(|err| err.to_string())
+                .and_then(|probe| probe.map_err(|err| err.to_string()))
+                .map(|()| "HCP's vault folder is writable".to_string()),
+        },
+        _ => return Err(ApiError::not_found()),
+    };
+    let (ok, message) = match outcome {
+        Ok(message) => (true, message),
+        Err(message) => (false, message),
+    };
+    Ok(Json(json!({ "connector": connector, "ok": ok, "latency_ms": millis(started), "message": message })))
+}
+
+/// Figures for the dashboard: `days` whole days up to today (default 14, at most 90) in
+/// time zone `tz` (an IANA name, default `UTC`).
+async fn metrics(
+    State(state): State<AppState>,
+    caller: Caller,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<crate::store::Metrics>, ApiError> {
+    caller.require_admin()?;
+    let days = match query.get("days") {
+        None => 14,
+        Some(raw) => match raw.parse::<i64>() {
+            Ok(days) if (1..=MAX_METRICS_DAYS).contains(&days) => days,
+            _ => return Err(ApiError::validation(format!("days must be between 1 and {MAX_METRICS_DAYS}"))),
+        },
+    };
+    let tz = query.get("tz").map(String::as_str).filter(|tz| !tz.is_empty()).unwrap_or("UTC");
+    match state.engine.store().metrics(days, tz).await {
+        Ok(metrics) => Ok(Json(metrics)),
+        Err(err @ MetricsError::UnknownTimeZone(_)) => Err(ApiError::validation(err.to_string())),
+        Err(MetricsError::Database(err)) => Err(err.into()),
+    }
 }
 
 #[derive(serde::Deserialize)]

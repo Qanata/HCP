@@ -37,6 +37,7 @@
         <li><a href="#flow">How it works</a></li>
         <li><a href="#slack">Slack</a></li>
         <li><a href="#vault">Vault</a></li>
+        <li><a href="#dashboard">Dashboard</a></li>
         <li><a href="#agents">Agents</a></li>
         <li><a href="#install">Install</a></li>
         <li><a href="#api">API</a></li>
@@ -424,6 +425,57 @@ git push --force origin main
     </div>
   </section>
 
+  <!-- DASHBOARD -->
+  <section id="dashboard">
+    <div class="split">
+      <div class="reveal">
+        <div class="section-label">Dashboard</div>
+        <h2 class="section-title">See what is waiting, at a glance</h2>
+        <p class="section-desc"><code>HCP.app</code> is a Mac app that shows what the server is doing. It watches; it
+          does not answer. Answers stay in Slack, where HCP checks who clicked.</p>
+        <ul class="points">
+          <li><strong>What is waiting on you</strong>, with live countdowns to each deadline, and a menu-bar icon
+            with the count.</li>
+          <li><strong>How it is going</strong>: approval rate, median and p90 time to answer, and what went
+            unanswered, for today or up to 90 days.</li>
+          <li><strong>Connector health</strong> for Slack, the Obsidian vault and Postgres, each with a test
+            button.</li>
+          <li><strong>Its key stays in your Keychain.</strong> The app creates its own key on first launch, and the
+            web view inside it never sees it.</li>
+        </ul>
+      </div>
+      <div class="reveal">
+        <table class="spec-table">
+          <caption>What the dashboard shows</caption>
+          <thead>
+            <tr>
+              <th scope="col">View</th>
+              <th scope="col">What is in it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Headline figures</th>
+              <td>Waiting now, next deadline, requests, approval rate, response times</td>
+            </tr>
+            <tr>
+              <th scope="row">Charts</th>
+              <td>Requests per day by outcome, and by agent, each with a table view</td>
+            </tr>
+            <tr>
+              <th scope="row">Lists</th>
+              <td>Waiting now, recent activity, responders, intents. Click a request for its context and audit trail</td>
+            </tr>
+            <tr>
+              <th scope="row">Connectors</th>
+              <td>Server and launchd service, Slack, the vault and the database</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <!-- AGENTS -->
   <section id="agents">
     <div class="reveal">
@@ -545,7 +597,14 @@ git push --force origin main
 <span class="cm"># Run the installer again to start the service</span>
 <span class="fn">deploy/macos/install.sh</span>
 
-<span class="fn">curl</span> http://127.0.0.1:3100/health</pre>
+<span class="fn">curl</span> http://127.0.0.1:3100/health
+
+<span class="cm"># Optional: the dashboard app, installed as ~/Applications/HCP.app</span>
+<span class="fn">deploy/macos/install-desktop.sh</span>
+
+<span class="cm"># Give Claude Code the MCP tools, in every project</span>
+<span class="fn">claude</span> mcp add --scope user hcp -- ~/.local/bin/hcp --env-file ~/.config/hcp/claude-code.env mcp
+<span class="cm"># then add the hook to ~/.claude/settings.json (see the README) and restart Claude Code</span></pre>
     </div>
     <div class="code-block reveal">
       <div class="code-header"><span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>&nbsp;
@@ -556,9 +615,12 @@ git push --force origin main
 <span class="kw">SLACK_APP_TOKEN</span>=<span class="str">xapp-…</span>               <span class="cm"># enables Socket Mode</span>
 <span class="kw">HCP_SLACK_CHANNEL</span>=<span class="str">C0123456789</span>        <span class="cm"># where requests are posted</span></pre>
     </div>
-    <p class="aside reveal">Creating the Slack app, connecting Claude Code and MCP harnesses, and every setting are
-      covered in the <a href="https://github.com/Qanata/HCP/blob/main/crates/hcp/README.md" target="_blank"
-        rel="noopener noreferrer">README</a>.</p>
+    <p class="aside reveal">The server reads <code>hcp.env</code> only when it starts, so restart it after a change:
+      <code>launchctl kickstart -k gui/$(id -u)/com.hcp.server</code>. On a network that inspects HTTPS, such as
+      Cisco Umbrella, the server may not be able to reach Slack.</p>
+    <p class="aside reveal">Creating the Slack app, connecting Claude Code and MCP harnesses, every setting, and
+      troubleshooting are covered in the <a href="https://github.com/Qanata/HCP/blob/main/crates/hcp/README.md"
+        target="_blank" rel="noopener noreferrer">README</a>.</p>
   </section>
 
   <!-- API REFERENCE -->
@@ -586,6 +648,14 @@ git push --force origin main
           class="endpoint-desc">Audit events</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/events</span><span
           class="endpoint-desc">State changes as they happen, over SSE</span></div>
+      <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/metrics</span><span
+          class="endpoint-desc">Counts, response times and open requests, for the dashboard. Admin keys only</span>
+      </div>
+      <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/v1/status</span><span
+          class="endpoint-desc">Version, uptime and connector health. Admin keys only</span></div>
+      <div class="endpoint"><span class="method post">POST</span><span
+          class="endpoint-path">/v1/status/{connector}/test</span><span class="endpoint-desc">Check the database,
+          Slack or the vault now. Admin keys only</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/health</span><span
           class="endpoint-desc">Health check</span></div>
     </div>
@@ -719,8 +789,9 @@ git push --force origin main
     <div class="reveal">
       <div class="section-label">Built with</div>
       <h2 class="section-title">What it is made of</h2>
-      <p class="section-desc">121 tests. The end-to-end ones run the real server and the real binary against a
-        throwaway Postgres and a stand-in for Slack. The original TypeScript service is archived in
+      <p class="section-desc">143 tests. The end-to-end ones run the real server and the real binary against a
+        throwaway Postgres and a stand-in for Slack. Slack and the Claude Code hook have also been checked by hand
+        against a real workspace. The original TypeScript service is archived in
         <code>archive/typescript</code>.</p>
     </div>
     <div class="badge-grid reveal">
@@ -732,6 +803,7 @@ git push --force origin main
       <span class="badge">Slack Socket Mode</span>
       <span class="badge">Obsidian Markdown</span>
       <span class="badge">launchd</span>
+      <span class="badge">Tauri</span>
       <span class="badge">ULID identifiers</span>
     </div>
   </section>
