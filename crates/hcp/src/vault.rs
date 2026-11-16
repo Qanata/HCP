@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -31,15 +32,24 @@ use tracing::field::{Field, Visit};
 
 use crate::config::VaultConfig;
 use crate::domain::{AuditEvent, CoordinationRequest, timestamp};
+use crate::health::{Snapshot, Tracker};
 use crate::store::Store;
 
 const BATCH: i64 = 200;
 const RETRY_EVERY: Duration = Duration::from_secs(30);
 
 pub struct Vault {
+    /// The Obsidian vault itself.
+    vault: PathBuf,
+    /// HCP's folder inside it.
     root: PathBuf,
     /// Events appended to the daily log whose outbox rows are not yet confirmed deleted.
     appended: Mutex<HashSet<String>>,
+    /// Each pass over the outbox: `last_ok_at` is the last pass that succeeded.
+    health: Tracker,
+    /// `last_ok_at` is the last time anything was written.
+    writes: Tracker,
+    written: AtomicU64,
 }
 
 impl Vault {
@@ -55,11 +65,39 @@ impl Vault {
             let path = root.join(folder);
             std::fs::create_dir_all(&path).with_context(|| format!("cannot create {}", path.display()))?;
         }
-        Ok(Self { root, appended: Mutex::new(HashSet::new()) })
+        Ok(Self {
+            vault: config.path.clone(),
+            root,
+            appended: Mutex::new(HashSet::new()),
+            health: Tracker::default(),
+            writes: Tracker::default(),
+            written: AtomicU64::new(0),
+        })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The Obsidian vault folder (HCP writes inside it, under [`Vault::root`]).
+    pub fn vault_path(&self) -> &Path {
+        &self.vault
+    }
+
+    pub fn health(&self) -> Snapshot {
+        self.health.snapshot()
+    }
+
+    /// When an event was last written, and how many have been since the server started.
+    pub fn writes(&self) -> (Option<DateTime<Utc>>, u64) {
+        (self.writes.snapshot().last_ok_at, self.written.load(Ordering::Relaxed))
+    }
+
+    /// Checks that HCP's folder can be written to, by creating and removing a file.
+    pub fn probe(&self) -> std::io::Result<()> {
+        let probe = self.root.join(format!(".hcp-probe-{}", crate::domain::new_id()));
+        std::fs::write(&probe, b"probe")?;
+        std::fs::remove_file(&probe)
     }
 
     /// Whether the directory looks like a vault Obsidian has opened.
@@ -181,9 +219,18 @@ pub async fn run(vault: Arc<Vault>, store: Store, wake: Arc<Notify>, shutdown: C
     let mut replay = true;
     loop {
         match drain(&vault, &store, replay).await {
-            Ok(_) => replay = false,
+            Ok(written) => {
+                replay = false;
+                vault.health.ok();
+                if written > 0 {
+                    vault.writes.ok();
+                    vault.written.fetch_add(written as u64, Ordering::Relaxed);
+                }
+            }
             Err(err) => {
-                tracing::warn!(error = %format!("{err:#}"), "could not write to the Obsidian vault; will retry")
+                let err = format!("{err:#}");
+                tracing::warn!(error = %err, "could not write to the Obsidian vault; will retry");
+                vault.health.fail(err);
             }
         }
         if shutdown.is_cancelled() {

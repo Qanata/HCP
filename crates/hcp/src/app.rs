@@ -47,7 +47,9 @@ impl App {
         let slack = config.slack.clone().map(SlackClient::new).transpose().context("cannot build the Slack client")?;
         match &slack {
             Some(client) => match client.auth_test().await {
-                Ok(bot) => tracing::info!(bot, channel = %client.config().channel, "Slack connected"),
+                Ok(identity) => {
+                    tracing::info!(bot = %identity.bot, team = %identity.team, channel = %client.config().channel, "Slack connected")
+                }
                 Err(err) => tracing::warn!(error = %err, "Slack credentials could not be verified; will keep trying"),
             },
             None => tracing::warn!(
@@ -60,7 +62,7 @@ impl App {
         let mut workers = Vec::new();
 
         workers.push(tokio::spawn(engine.clone().run_scheduler(config.poll_interval, shutdown.clone())));
-        if let Some(vault) = vault {
+        if let Some(vault) = vault.clone() {
             workers.push(tokio::spawn(vault::run(vault, store, engine.vault_wake(), shutdown.clone())));
         }
         if let Some(client) = slack.filter(|client| client.config().app_token.is_some()) {
@@ -71,7 +73,7 @@ impl App {
             .await
             .with_context(|| format!("cannot listen on {}:{}", config.bind, config.port))?;
         let addr = listener.local_addr()?;
-        let router = api::router(AppState::new(engine.clone(), shutdown.clone()));
+        let router = api::router(AppState::new(engine.clone(), shutdown.clone(), vault));
         let stop = shutdown.clone();
         let server = tokio::spawn(async move {
             let served = axum::serve(listener, router).with_graceful_shutdown(stop.cancelled_owned()).await;

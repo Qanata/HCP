@@ -12,6 +12,7 @@ and is no longer maintained.
 | Piece | Status |
 |-------|--------|
 | REST API (`/v1/requests`, `/v1/audit`, `/v1/events`, `/health`) | Ported, wire-compatible for agents |
+| Desktop dashboard (`HCP.app`, `/v1/metrics`, `/v1/status`) | New, in `crates/hcp-desktop/`; replaces the web portal for watching, while answering stays in Slack |
 | State machine, timeouts, fallbacks, escalation | Ported, with fixes (see [Differences](#differences-from-the-typescript-service)) |
 | Slack approvals | Ported and extended: Socket Mode, signed HTTP, modals for free-text answers |
 | Logs in an Obsidian vault | New |
@@ -47,8 +48,22 @@ deploy/macos/install.sh
 curl http://127.0.0.1:3100/health
 ```
 
-The service starts at login and is restarted by launchd if it exits. Output from before
-the vault is open (a bad config, a missing vault) goes to `~/Library/Logs/hcp/stderr.log`.
+The service starts at login and is restarted by launchd if it exits. Its console output
+goes to `~/Library/Logs/hcp/stderr.log`, including anything from before the vault is open
+(a bad config, a missing vault); once the vault is open, the same lines are also written to
+the vault's service log. A healthy start with Slack configured looks like this:
+
+```
+INFO hcp::app: Slack connected bot=hcp team=… channel=C0…
+INFO hcp::app: HCP listening addr=127.0.0.1:3100
+INFO hcp::slack::socket: Slack Socket Mode connected
+```
+
+The server reads `hcp.env` only when it starts. After editing it, restart the service:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.hcp.server
+```
 
 Two things to know about macOS:
 
@@ -60,7 +75,24 @@ Two things to know about macOS:
   → Privacy & Security, or keep the vault somewhere else.
 
 To run it in the foreground instead: `hcp --env-file <file> serve` (or put the settings
-in `./.env`).
+in `./.env`). Stop the service first with
+`launchctl bootout gui/$(id -u)/com.hcp.server`, or the port is already taken: killing the
+process is not enough, because launchd starts it again. Run `deploy/macos/install.sh` to
+bring the service back.
+
+### Troubleshooting
+
+| What you see | Why | What to do |
+|--------------|-----|------------|
+| `Slack is not configured` in `stderr.log` after you filled in the Slack settings | The service is still running with the settings it started with | Restart it (`launchctl kickstart -k …`, above) |
+| `Slack credentials could not be verified; will keep trying` or `Slack Socket Mode connection lost`, both with `error sending request for url (https://slack.com/api/…)` | The server cannot reach Slack. A network filter that inspects HTTPS (Cisco Umbrella, Zscaler and similar) is a common cause: `curl` from a terminal can work while `hcp` fails | Check `curl https://slack.com/api/api.test`. If a filter is running, pause it or ask for `slack.com` and `wss-*.slack.com` to be exempted. The server keeps retrying, so it connects once Slack is reachable |
+| `Slack API auth.test failed: invalid_auth` (or `not_authed`) | The token is wrong, or the app is not installed in the workspace | Recheck `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` |
+| `Operation not permitted` | macOS privacy controls (see above) | Grant Full Disk Access, or move the vault |
+| `Address already in use` | Another copy, usually the service, already has the port | Stop the service before running in the foreground |
+
+While Slack is unreachable, a request that needs a person stays undelivered and times out
+at its deadline, and the Claude Code hook blocks gated commands (unless
+`HCP_HOOK_ON_ERROR=allow`).
 
 ## Configuration
 
@@ -211,8 +243,17 @@ printf 'HCP_API_KEY=hcp_...\nHCP_RESPONDER=isaac\n' > ~/.config/hcp/claude-code.
 | `hcp_notify` | One-way notification; returns at once |
 | `hcp_submit` / `hcp_poll` / `hcp_cancel` | Ask without blocking, check later, withdraw |
 
+For Claude Code, register it once for every project:
+
+```bash
+claude mcp add --scope user hcp -- ~/.local/bin/hcp --env-file ~/.config/hcp/claude-code.env mcp
+```
+
+Restart Claude Code, then check `/mcp` lists `hcp` as connected.
+
 `routing_hints` is optional: without it a request goes to `HCP_RESPONDER` in the default
-channel.
+channel. The agent decides when to call these tools; [`docs/agent-system-prompt.md`](../../docs/agent-system-prompt.md)
+is guidance on that to put in its instructions.
 
 It speaks every MCP revision from 2024-11-05 through 2026-07-28, including the stateless
 protocol that revision introduced. Compared with the Node server it replaces:
@@ -292,6 +333,16 @@ later) closes that gap. `timeout` is in seconds and must be longer than
 `HCP_HOOK_TIMEOUT`, or Claude Code gives up on the hook before the human has had their
 time. Only the `PreToolUse` entry is needed if you just want the gate.
 
+Add these entries to any `hooks` you already have rather than replacing them. Claude Code
+may refuse to edit its own settings file on your behalf (auto mode treats that as
+self-modification), so make this change yourself. Once the hook is active, later edits to
+the file need approval in Slack anyway. Restart Claude Code afterwards.
+
+The hook sees only the tool calls Claude makes. A command you type yourself, in a terminal
+or with `!` in the Claude Code prompt, runs without it. To check the gate, ask Claude to
+run `git push --dry-run`: a request should appear in Slack, and the command runs only if
+you approve it.
+
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HCP_HOOK_TIMEOUT` | `300` | Seconds a human has to answer; after that the command is rejected |
@@ -328,6 +379,57 @@ names only the folder. Keep the binary and env file somewhere the agent has no r
 work in (not inside a project, and not in a build output folder the hook runs from), and
 add any wrapper the hook command uses to `HCP_HOOK_PROTECTED_PATHS`.
 
+## Desktop dashboard
+
+`HCP.app` is a Mac app that shows what the server is doing:
+
+- **Headline figures:** how many requests are waiting on you and the next deadline;
+  requests for a person, approval rate, median and p90 time to answer, how many went
+  unanswered, and notifications, for today or the last 7, 14, 30 or 90 days.
+- **Charts:** requests per day by outcome, and requests by agent. Each has a table view.
+- **Lists:** what is waiting now (with live countdowns), recent activity, who answers and
+  how fast, and requests by intent. Clicking a request shows its context, answer and audit
+  trail.
+- **Connectors:** the server and its launchd service, Slack (workspace, Socket Mode state,
+  channels, responders, last API call), the Obsidian vault (last write, queue) and the
+  Neon database (round trip, size, rows, schema). Each can be tested, and opened in Slack,
+  Obsidian, Console or the Neon console.
+- **Menu bar:** a hexagon showing how many requests are waiting. Closing the window keeps it
+  running; quit from its menu.
+
+It updates live from `/v1/events`. It is read-only by design: it cannot answer, cancel or
+reconfigure anything. Answers stay in Slack, where HCP checks who clicked; settings stay in
+`hcp.env`.
+
+```bash
+deploy/macos/install-desktop.sh
+```
+
+This builds the app and installs it as `~/Applications/HCP.app`. On first launch it asks
+to create its own key. It runs `hcp keys create hcp-desktop --scope admin`, keeps the key
+in your login Keychain and revokes the key it replaces. You can paste a key of your own
+instead. The key is used only by the app's Rust side; the web view inside it never sees
+it, and other programs running as you get a Keychain prompt rather than the key. "Disconnect
+this dashboard" removes it from the Keychain; revoke it with `hcp keys revoke` as well if
+you are done with it.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HCP_BASE_URL` | `http://127.0.0.1:3100` | The server to read from |
+| `HCP_BIN` | `~/.local/bin/hcp` | Used to create the dashboard's key |
+| `HCP_ENV_FILE` | `~/.config/hcp/hcp.env` | The server's env file, for the same |
+
+The data comes from two admin-only endpoints, which any `admin` key can also use:
+
+- `GET /v1/metrics?days=14&tz=Europe/London`: counts by outcome (in total, per day, per
+  agent and per intent), response times, responders, open requests and recent events.
+  `days` is 1 to 90; `tz` is an IANA time zone and decides where days start.
+- `GET /v1/status`: version and uptime, database statistics, Slack configuration and
+  connection health, and vault health. Channel IDs and responder mappings are included;
+  tokens, secrets and the database password never are.
+- `POST /v1/status/{database|slack|vault}/test`: actively checks one connector. Slack runs
+  `auth.test` and posts nothing. The vault test writes and removes a file in HCP's folder.
+
 ## API keys and who can do what
 
 ```bash
@@ -342,7 +444,7 @@ Keys created by the TypeScript service keep working (same hashing, same table).
 |-----|-----|
 | No scopes (an agent) | Submit requests; read, list, cancel and collect answers for its own requests; read its own audit events and event stream |
 | `respond` | Also answer **any** request through `POST /v1/requests/{id}/respond`, under whatever `responded_by` name it gives. It is not bound to an agent or to `HCP_SLACK_RESPONDERS`, so treat it as an approver's credential: give it only to a console a person operates, never to an agent |
-| `admin` | Also read every agent's requests, audit events and event stream |
+| `admin` | Also read every agent's requests, audit events and event stream, and the dashboard's metrics and connector status |
 
 ## Differences from the TypeScript service
 
@@ -390,9 +492,10 @@ binary, the latter as an MCP server and as a hook. `tests/node_clients.rs` drive
 original Node hook and MCP server against this server and is skipped when Node is not
 installed.
 
-Slack is mocked in every test: the Slack integration has not yet been exercised against
-the real Slack API. Likewise the hook is tested by feeding it the events Claude Code
-documents, not from inside a live Claude Code session.
+Slack is mocked in every test, and the hook is tested by feeding it the events Claude Code
+documents. Both have also been checked by hand against a real Slack workspace and Claude
+Code 2.1.325: Socket Mode, a free-text answer through `hcp_coordinate`, and a gated
+`git push` that was rejected and then approved.
 
 ```bash
 cargo clippy --all-targets -- -D warnings
@@ -420,5 +523,16 @@ src/
   app.rs                 wiring and lifecycle
   logging.rs             console and vault log setup
   config.rs              environment configuration
+  health.rs              connector health reported by /v1/status
   main.rs                CLI
+
+../hcp-desktop/
+  src/main.rs            the app: commands, menu-bar icon, live event follower
+  src/server.rs          client for the HCP server (holds the admin key)
+  src/keychain.rs        the admin key in the macOS Keychain
+  ui/                    the dashboard (HTML, CSS, JavaScript; no build step)
+  icons/make-icons.py    draws the app and menu-bar icons
 ```
+
+`cargo build` and `cargo test` cover the server only. Build the app with
+`cargo build -p hcp-desktop`, or install it with `deploy/macos/install-desktop.sh`.

@@ -36,7 +36,9 @@ enum SocketError {
 /// Keeps a Socket Mode connection open until shutdown, reconnecting with backoff.
 pub async fn run(engine: Engine, client: SlackClient, shutdown: CancellationToken) {
     let mut backoff = Duration::from_secs(1);
+    let health = client.socket_health();
     loop {
+        health.set_state("connecting");
         let started = Instant::now();
         let outcome = tokio::select! {
             _ = shutdown.cancelled() => return,
@@ -47,8 +49,12 @@ pub async fn run(engine: Engine, client: SlackClient, shutdown: CancellationToke
         }
         match outcome {
             Ok(()) => tracing::info!("Slack asked for a Socket Mode reconnect"),
-            Err(err) => tracing::warn!(error = %err, "Slack Socket Mode connection lost"),
+            Err(err) => {
+                tracing::warn!(error = %err, "Slack Socket Mode connection lost");
+                health.fail(&err);
+            }
         }
+        health.set_state("reconnecting");
         // A connection that lasted a while was healthy: start the backoff over.
         if started.elapsed() > Duration::from_secs(60) {
             backoff = Duration::from_secs(1);
@@ -112,6 +118,10 @@ fn dispatch(engine: &Engine, envelope: Value, acks: &mpsc::UnboundedSender<Strin
     match envelope.get("type").and_then(Value::as_str) {
         Some("hello") => {
             tracing::info!("Slack Socket Mode connected");
+            if let Some(slack) = engine.slack() {
+                slack.socket_health().set_state("connected");
+                slack.socket_health().ok();
+            }
             true
         }
         Some("disconnect") => false,

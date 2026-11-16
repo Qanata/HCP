@@ -63,8 +63,15 @@ echo "Installed $PLIST"
 
 if [ "$LOAD" = 1 ]; then
   DOMAIN="gui/$(id -u)"
-  # Replace a running copy, if there is one.
-  launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+  # Replace a running copy, if there is one. `bootout` returns before the old service has
+  # fully gone, and bootstrapping over it fails ("Bootstrap failed: 5"), so wait for it.
+  if launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null; then
+    i=0
+    while launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 && [ "$i" -lt 50 ]; do
+      sleep 0.2
+      i=$((i + 1))
+    done
+  fi
   launchctl bootstrap "$DOMAIN" "$PLIST"
   echo "Started $LABEL. Check it with:"
   echo "  curl http://127.0.0.1:3100/health"

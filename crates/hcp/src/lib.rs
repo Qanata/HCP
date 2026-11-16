@@ -9,6 +9,7 @@ pub mod client;
 pub mod config;
 pub mod domain;
 pub mod engine;
+pub mod health;
 pub mod hook;
 pub mod logging;
 pub mod mcp;

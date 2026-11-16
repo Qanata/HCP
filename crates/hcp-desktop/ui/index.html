@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HCP</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <defs>
+          <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="hsl(265,90%,65%)"/>
+            <stop offset="100%" stop-color="hsl(190,95%,55%)"/>
+          </linearGradient>
+        </defs>
+        <polygon points="32,4 58,18 58,46 32,60 6,46 6,18" fill="none" stroke="url(#brand)" stroke-width="5" stroke-linejoin="round"/>
+      </svg>
+      HCP
+    </div>
+    <span class="live" id="live"><span class="dot"></span><span id="live-text">Connecting</span></span>
+    <span class="spacer"></span>
+    <span class="muted" id="updated"></span>
+    <button class="ghost" id="refresh" type="button">Refresh</button>
+  </header>
+
+  <!-- Shown until there is a server to read and a key to read it with. -->
+  <section class="setup" id="setup" hidden>
+    <h1>Connect the dashboard</h1>
+    <p id="setup-why"></p>
+    <div class="steps">
+      <div class="card" id="setup-server" hidden>
+        <strong>The HCP server is not answering</strong>
+        <p class="secondary" id="setup-server-error"></p>
+        <p class="secondary">Start it with <span class="mono">deploy/macos/install.sh</span>, then retry.</p>
+        <button class="ghost" type="button" id="setup-retry">Retry</button>
+      </div>
+      <div class="card" id="setup-key" hidden>
+        <strong>Give the dashboard a read-only admin key</strong>
+        <p class="secondary">
+          HCP Desktop creates its own key with <span class="mono">hcp keys create hcp-desktop --scope admin</span>
+          and keeps it in your Keychain. It can read every request and connector status, and cannot answer
+          or change anything.
+        </p>
+        <p><button class="primary" type="button" id="create-key">Create dashboard key</button></p>
+        <details>
+          <summary class="secondary">Or paste a key you created yourself</summary>
+          <p><input id="paste-key" type="password" placeholder="hcp_…" autocomplete="off" spellcheck="false"></p>
+          <button class="ghost" type="button" id="save-key">Use this key</button>
+        </details>
+        <p class="error" id="setup-error"></p>
+      </div>
+    </div>
+  </section>
+
+  <div id="dashboard" hidden>
+    <div class="filters" role="toolbar" aria-label="Period">
+      <div class="segmented" id="range">
+        <button type="button" data-days="1">Today</button>
+        <button type="button" data-days="7">7 days</button>
+        <button type="button" data-days="14">14 days</button>
+        <button type="button" data-days="30">30 days</button>
+        <button type="button" data-days="90">90 days</button>
+      </div>
+      <span class="muted" id="range-note"></span>
+    </div>
+
+    <main id="main">
+      <div class="banner problem" id="problem" hidden></div>
+
+      <section class="kpis refreshable" aria-label="Headline figures">
+        <div class="card tile hero">
+          <div class="label">Waiting on you</div>
+          <div class="value" id="kpi-waiting">–</div>
+          <div class="note" id="kpi-waiting-note"></div>
+        </div>
+        <div class="card tile">
+          <div class="label">Requests for a person</div>
+          <div class="value" id="kpi-requests">–</div>
+          <div class="note" id="kpi-requests-note"></div>
+        </div>
+        <div class="card tile">
+          <div class="label">Approval rate</div>
+          <div class="value" id="kpi-approval">–</div>
+          <div class="note" id="kpi-approval-note"></div>
+        </div>
+        <div class="card tile">
+          <div class="label">Median time to answer</div>
+          <div class="value" id="kpi-median">–</div>
+          <div class="note" id="kpi-median-note"></div>
+        </div>
+        <div class="card tile">
+          <div class="label">No answer in time</div>
+          <div class="value" id="kpi-missed">–</div>
+          <div class="note" id="kpi-missed-note"></div>
+        </div>
+        <div class="card tile">
+          <div class="label">Notifications</div>
+          <div class="value" id="kpi-notes">–</div>
+          <div class="note">One-way, nobody asked</div>
+        </div>
+      </section>
+
+      <div class="row">
+        <section class="card span-8 refreshable" aria-labelledby="daily-title">
+          <div class="card-head">
+            <h2 id="daily-title">Requests per day</h2>
+            <span class="sub">by outcome, excluding notifications</span>
+            <div class="actions"><button class="ghost" type="button" data-table="daily">Table</button></div>
+          </div>
+          <div id="daily-legend"></div>
+          <div class="chart" id="daily"></div>
+          <div id="daily-table" hidden></div>
+        </section>
+
+        <section class="card span-4 refreshable" aria-labelledby="agents-title">
+          <div class="card-head">
+            <h2 id="agents-title">Requests by agent</h2>
+            <div class="actions"><button class="ghost" type="button" data-table="agents">Table</button></div>
+          </div>
+          <div class="chart" id="agents"></div>
+          <div id="agents-table" hidden></div>
+        </section>
+      </div>
+
+      <div class="row">
+        <section class="card span-7" aria-labelledby="open-title">
+          <div class="card-head">
+            <h2 id="open-title">Waiting now</h2>
+            <span class="sub">soonest deadline first · answer in Slack</span>
+          </div>
+          <div id="open"></div>
+        </section>
+
+        <section class="card span-5" aria-labelledby="recent-title">
+          <div class="card-head">
+            <h2 id="recent-title">Recent activity</h2>
+          </div>
+          <ul class="feed" id="recent"></ul>
+        </section>
+      </div>
+
+      <section class="card" aria-labelledby="connectors-title">
+        <div class="card-head">
+          <h2 id="connectors-title">Connectors</h2>
+          <span class="sub" id="server-note"></span>
+        </div>
+        <div class="connectors" id="connectors"></div>
+      </section>
+
+      <div class="row">
+        <section class="card span-6 refreshable" aria-labelledby="responders-title">
+          <div class="card-head">
+            <h2 id="responders-title">Who answers</h2>
+            <span class="sub">people only, this period</span>
+          </div>
+          <div id="responders"></div>
+        </section>
+
+        <section class="card span-6 refreshable" aria-labelledby="intents-title">
+          <div class="card-head">
+            <h2 id="intents-title">By intent</h2>
+          </div>
+          <div id="intents"></div>
+        </section>
+      </div>
+
+      <p class="muted" style="font-size: 12px">
+        Read-only. Requests are answered in Slack, where HCP checks who clicked; settings live in
+        <span class="mono">~/.config/hcp/hcp.env</span>.
+        <button class="ghost" type="button" id="forget-key" style="font-size: 12px; margin-left: 8px">Disconnect this dashboard</button>
+      </p>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <aside class="drawer" id="drawer" hidden aria-label="Request details"></aside>
+</body>
+</html>

@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/hcp"]
+members = ["crates/hcp", "crates/hcp-desktop"]
+# The desktop app pulls in Tauri; build it on request (`cargo build -p hcp-desktop` or
+# deploy/macos/install-desktop.sh) so plain `cargo build` / `cargo test` stay fast.
+default-members = ["crates/hcp"]
 resolver = "3"
 
 [workspace.package]

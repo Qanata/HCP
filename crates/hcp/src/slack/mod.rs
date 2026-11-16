@@ -7,6 +7,7 @@
 pub mod interactions;
 pub mod socket;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hmac::{Hmac, KeyInit, Mac};
@@ -15,6 +16,7 @@ use sha2::Sha256;
 
 use crate::config::SlackConfig;
 use crate::domain::{CoordinationRequest, Fallback, Intent, State, Urgency};
+use crate::health::Tracker;
 
 pub const ACTION_APPROVE: &str = "hcp_approve";
 pub const ACTION_REJECT: &str = "hcp_reject";
@@ -40,10 +42,25 @@ pub enum SlackError {
     Transport(#[from] reqwest::Error),
 }
 
+/// Who the bot token belongs to, as `auth.test` reports it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Identity {
+    pub bot: String,
+    pub team: String,
+    pub team_id: String,
+    /// The workspace URL, e.g. `https://acme.slack.com/`.
+    pub url: String,
+}
+
 #[derive(Clone)]
 pub struct SlackClient {
     http: reqwest::Client,
     config: SlackConfig,
+    /// Every Web API call, successful or not.
+    api: Arc<Tracker>,
+    /// The Socket Mode connection, when there is one.
+    socket: Arc<Tracker>,
+    identity: Arc<Mutex<Option<Identity>>>,
 }
 
 impl SlackClient {
@@ -52,14 +69,36 @@ impl SlackClient {
             .timeout(Duration::from_secs(10))
             .user_agent(concat!("hcp/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        Ok(Self { http, config })
+        Ok(Self { http, config, api: Arc::default(), socket: Arc::default(), identity: Arc::default() })
     }
 
     pub fn config(&self) -> &SlackConfig {
         &self.config
     }
 
+    pub fn api_health(&self) -> &Tracker {
+        &self.api
+    }
+
+    pub fn socket_health(&self) -> &Tracker {
+        &self.socket
+    }
+
+    /// The bot's identity from the last successful `auth.test`.
+    pub fn identity(&self) -> Option<Identity> {
+        self.identity.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
     async fn call(&self, method: &str, token: &str, body: Option<&Value>) -> Result<Value, SlackError> {
+        let result = self.call_once(method, token, body).await;
+        match &result {
+            Ok(_) => self.api.ok(),
+            Err(err) => self.api.fail(err),
+        }
+        result
+    }
+
+    async fn call_once(&self, method: &str, token: &str, body: Option<&Value>) -> Result<Value, SlackError> {
         let request = self.http.post(format!("{}/{method}", self.config.api_base)).bearer_auth(token);
         let request = match body {
             Some(body) => request.json(body),
@@ -78,10 +117,14 @@ impl SlackClient {
         }
     }
 
-    /// Checks the bot token and returns the bot's user name.
-    pub async fn auth_test(&self) -> Result<String, SlackError> {
+    /// Checks the bot token and returns who it belongs to.
+    pub async fn auth_test(&self) -> Result<Identity, SlackError> {
         let reply = self.call("auth.test", &self.config.bot_token, None).await?;
-        Ok(reply.get("user").and_then(Value::as_str).unwrap_or("unknown").to_string())
+        let field = |key: &str| reply.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        let identity =
+            Identity { bot: field("user"), team: field("team"), team_id: field("team_id"), url: field("url") };
+        *self.identity.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(identity.clone());
+        Ok(identity)
     }
 
     /// Posts the request to a channel and returns the message timestamp.

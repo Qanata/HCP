@@ -142,7 +142,9 @@ async fn mock_api(
     state.calls.lock().unwrap().push(Call { method: method.clone(), authorization, body: body.clone() });
 
     axum::Json(match method.as_str() {
-        "auth.test" => json!({ "ok": true, "user": "hcp-bot" }),
+        "auth.test" => json!({
+            "ok": true, "user": "hcp-bot", "team": "Acme", "team_id": "T_ACME", "url": "https://acme.slack.com/",
+        }),
         "chat.postMessage" if state.fail_posts.load(Ordering::SeqCst) => {
             json!({ "ok": false, "error": "channel_not_found" })
         }
