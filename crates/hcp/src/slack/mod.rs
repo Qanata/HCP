@@ -422,6 +422,7 @@ pub(crate) mod tests {
             signing_secret: Some("secret".to_string()),
             channel: "C_APPROVALS".to_string(),
             notify_channel: None,
+            allowed_channels: vec!["C_OPS".to_string()],
             responders: HashMap::from([("isaac".to_string(), "U_ISAAC".to_string())]),
             api_base: "http://127.0.0.1:1".to_string(),
         }

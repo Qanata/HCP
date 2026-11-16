@@ -35,6 +35,8 @@ pub const BOT_TOKEN: &str = "xoxb-test-bot-token";
 pub const APP_TOKEN: &str = "xapp-test-app-token";
 pub const SIGNING_SECRET: &str = "test-signing-secret";
 pub const CHANNEL: &str = "C_APPROVALS";
+/// A channel agents may name besides the default (`HCP_SLACK_ALLOWED_CHANNELS`).
+pub const EXTRA_CHANNEL: &str = "C_FEED";
 
 /// Pinned so the binaries are downloaded once and then reused from `target/`.
 const POSTGRES_VERSION: &str = "=17.12.0";
@@ -288,6 +290,7 @@ impl Harness {
             signing_secret: (options.slack == SlackMode::Http).then(|| SIGNING_SECRET.to_string()),
             channel: CHANNEL.to_string(),
             notify_channel: options.notify_channel.map(str::to_string),
+            allowed_channels: vec![EXTRA_CHANNEL.to_string()],
             responders: options
                 .responders
                 .iter()

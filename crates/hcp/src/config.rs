@@ -20,7 +20,9 @@ pub struct Config {
     pub slack: Option<SlackConfig>,
     /// How often the scheduler looks for expired and undelivered requests.
     pub poll_interval: Duration,
-    /// How long a request may sit unrouted before the scheduler retries delivery.
+    /// How long a request may sit unrouted before the scheduler retries delivery. Must stay
+    /// well above the Slack client's 10-second request timeout: a post still in flight is
+    /// then never retried alongside itself, which would post the request twice.
     pub routing_retry_after: Duration,
 }
 
@@ -50,8 +52,12 @@ pub struct SlackConfig {
     /// Channel for one-way notifications. Unset: notifications are logged to the vault only,
     /// unless the request names a Slack channel itself.
     pub notify_channel: Option<String>,
+    /// Further channels an agent may name in `routing_hints.slack_channel_id`. The two
+    /// channels above are always allowed; any other channel is refused.
+    pub allowed_channels: Vec<String>,
     /// `responder_id` -> Slack user ID. A mapped responder is @-mentioned and is the only
-    /// person allowed to answer.
+    /// person allowed to answer. Once any responder is mapped, requests addressed to an
+    /// unmapped responder are refused: agents must not be able to pick an unrestricted one.
     pub responders: HashMap<String, String>,
     pub api_base: String,
 }
@@ -64,9 +70,25 @@ impl std::fmt::Debug for SlackConfig {
             .field("signing_secret", &self.signing_secret.as_ref().map(|_| "<redacted>"))
             .field("channel", &self.channel)
             .field("notify_channel", &self.notify_channel)
+            .field("allowed_channels", &self.allowed_channels)
             .field("responders", &self.responders)
             .field("api_base", &self.api_base)
             .finish()
+    }
+}
+
+impl SlackConfig {
+    /// Whether an agent may have a request posted to this channel.
+    pub fn allows_channel(&self, channel: &str) -> bool {
+        channel == self.channel
+            || self.notify_channel.as_deref() == Some(channel)
+            || self.allowed_channels.iter().any(|allowed| allowed == channel)
+    }
+
+    /// Whether requests may be addressed to this responder. With no responders mapped,
+    /// anyone in the channel may answer, so any name will do.
+    pub fn allows_responder(&self, responder_id: &str) -> bool {
+        self.responders.is_empty() || self.responders.contains_key(responder_id)
     }
 }
 
@@ -124,6 +146,13 @@ impl Config {
                     signing_secret,
                     channel,
                     notify_channel: get("HCP_SLACK_NOTIFY_CHANNEL"),
+                    allowed_channels: get("HCP_SLACK_ALLOWED_CHANNELS")
+                        .unwrap_or_default()
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|channel| !channel.is_empty())
+                        .map(str::to_string)
+                        .collect(),
                     responders: parse_responders(get("HCP_SLACK_RESPONDERS").as_deref())?,
                     api_base: get("SLACK_API_BASE_URL")
                         .unwrap_or_else(|| DEFAULT_SLACK_API_BASE.to_string())
@@ -227,6 +256,16 @@ mod tests {
         assert_eq!(slack.channel, "C123");
         assert_eq!(slack.responders["ops-lead"], "U2");
         assert_eq!(slack.api_base, DEFAULT_SLACK_API_BASE);
+        assert!(slack.allows_responder("isaac") && !slack.allows_responder("someone-else"));
+        assert!(slack.allows_channel("C123") && !slack.allows_channel("C_ELSEWHERE"));
+
+        let mut extra = complete.clone();
+        extra.push(("HCP_SLACK_NOTIFY_CHANNEL", "C_FEED"));
+        extra.push(("HCP_SLACK_ALLOWED_CHANNELS", "C_OPS, C_EXEC,"));
+        let slack = config(&extra).unwrap().slack.unwrap();
+        assert_eq!(slack.allowed_channels, ["C_OPS", "C_EXEC"]);
+        assert!(["C123", "C_FEED", "C_OPS", "C_EXEC"].iter().all(|c| slack.allows_channel(c)));
+        assert!(!slack.allows_channel("C_OTHER"));
     }
 
     #[test]

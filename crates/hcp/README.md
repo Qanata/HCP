@@ -6,7 +6,8 @@ vault. It is a single native binary (`hcp`) intended to run as a background serv
 Mac.
 
 Everything the TypeScript service did is ported except the web portal, which Slack
-replaces. The TypeScript code in the repository root is kept for reference.
+replaces. The TypeScript service is archived in [`archive/typescript`](../../archive/typescript/README.md)
+and is no longer maintained.
 
 | Piece | Status |
 |-------|--------|
@@ -76,7 +77,8 @@ Variables already set in the environment win over the file.
 | `SLACK_SIGNING_SECRET` | unset | Enables `POST /slack/interactions` with signature verification |
 | `HCP_SLACK_CHANNEL` | required with Slack | Channel ID that receives every request needing a human |
 | `HCP_SLACK_NOTIFY_CHANNEL` | unset | Channel for `NOTIFICATION` requests. Unset: they are only logged |
-| `HCP_SLACK_RESPONDERS` | unset | `responder_id=SlackUserID,…`. A mapped responder is @-mentioned and is the only one who can answer |
+| `HCP_SLACK_RESPONDERS` | unset | `responder_id=SlackUserID,…`. A mapped responder is @-mentioned and is the only one who can answer. Once any responder is mapped, requests naming an unmapped `responder_id` (or `escalation_responder_id`) are refused with `400` |
+| `HCP_SLACK_ALLOWED_CHANNELS` | unset | Further channel IDs, comma-separated, that a request may name in `routing_hints.slack_channel_id`. `HCP_SLACK_CHANNEL` and `HCP_SLACK_NOTIFY_CHANNEL` are always allowed; any other channel is refused with `400` |
 | `HCP_BIND` | `127.0.0.1` | Listen address |
 | `HCP_PORT` | `3100` | Listen port |
 | `HCP_TIMEOUT_POLL_SECONDS` | `10` | How often timeouts and undelivered requests are checked |
@@ -106,14 +108,24 @@ What people see:
 - **Clarification, decision, input, review and escalation** requests get a Respond button
   that opens a text box; the answer reaches the agent as `{"text": "…"}`.
 - **Notifications** have no controls, and are only posted if a channel is named for them.
+  A notification is `DELIVERED` as soon as it is posted or logged; it never waits, so its
+  timeout fallback never applies and its message is never rewritten.
 - Once a request is answered, cancelled, escalated or timed out, its message is rewritten
   to say so and the buttons are removed.
 - The message says what happens at the deadline. An `AUTO_APPROVE` fallback is called out
-  in bold, because silence then means yes.
+  in bold, because silence then means yes. Without Slack configured nobody is known to have
+  seen a request, so `AUTO_APPROVE` times it out instead (`reason: never_shown_in_slack`).
 
 Routing: anything that needs a human goes to `routing_hints.slack_channel_id` if the
 request names one, otherwise to `HCP_SLACK_CHANNEL`. A request asking for the old
 `portal` channel is routed to Slack as well.
+
+Agents choose their own routing hints, so the server checks them. Without the checks, an
+agent could name a responder nobody is mapped to (whom anyone in the channel may stand in
+for), or a channel of its choosing, and so pick its own approver. Set
+`HCP_SLACK_RESPONDERS` to restrict who can answer, and list any extra channels in
+`HCP_SLACK_ALLOWED_CHANNELS`. A request created before these checks, for a responder who
+is not mapped, cannot be answered in Slack at all; it follows its timeout policy.
 
 ## What lands in the vault
 
@@ -222,7 +234,26 @@ protocol that revision introduced. Compared with the Node server it replaces:
 |------|----------|--------------|
 | Safe | `ls`, `git status`, `cat x \| grep y` | Passes silently, without contacting the server |
 | Notify | `cargo build`, `npm install`, file edits | A notification is logged; nothing waits |
-| Gate | `rm -rf`, `git push`, `terraform apply`, `DROP TABLE` | Blocked until a human approves it in Slack |
+| Gate | `rm -rf`, `git push`, `terraform apply`, `DROP TABLE`, `curl … \| sh`, `eval` | Blocked until a human approves it in Slack |
+
+Destructive patterns are also matched with shell quoting removed, so `"rm" -rf`, `r''m -rf`
+and `rm${IFS}-rf` are gated too. Piping into a shell, `eval`, `sh -c "$(…)"` and
+`bash <(…)` are gated because the hook cannot see the code they run.
+
+In every mode, changes to the files that control supervision are gated as well, whether
+made with Write/Edit or from Bash: Claude Code settings (`.claude/settings*.json`,
+`managed-settings.json`, `.claude/hooks/`), `.mcp.json`, git configuration and hooks
+(`.git/config`, `.git/hooks/`, `~/.gitconfig`, and `git config` that sets a value), and shell
+start-up files (`.zshrc`, `.bashrc`, `.profile` and similar). Reading them is not gated.
+
+The hook protects its own files the same way: the `hcp` binary it is running from (under
+its symlink-resolved name too), the `--env-file` it was started with (which holds its API
+key and settings), and anything in `HCP_HOOK_PROTECTED_PATHS`. A Write or Edit to one of
+them is gated, and so is a Bash command that is not read-only and names one, whether by
+absolute path, through `~` or `$HOME`, or relative to the session's working directory.
+Names are compared without regard to case, as the macOS file system does. Running the
+binary by its full path counts as naming it, so `/Users/you/.local/bin/hcp keys list` asks
+first; `hcp keys list` found on `PATH` does not.
 
 Register it in `~/.claude/settings.json` (your user settings, not the project's):
 
@@ -266,6 +297,7 @@ time. Only the `PreToolUse` entry is needed if you just want the gate.
 | `HCP_HOOK_TIMEOUT` | `300` | Seconds a human has to answer; after that the command is rejected |
 | `HCP_HOOK_MODE` | `notify_and_gate` | `gate_only`: no notifications. `gate_all`: gate every Bash command that is not read-only |
 | `HCP_HOOK_ON_ERROR` | `block` | What happens to a gated command when approval cannot be requested at all. `allow` fails open |
+| `HCP_HOOK_PROTECTED_PATHS` | unset | More files or folders the agent may not change without approval, separated by `:` like `PATH`. Absolute or `~/`; a folder protects everything in it. Use it for a wrapper script or anything else the hook command depends on |
 
 A gated command runs only if a person approved it. A rejection, a timeout, or losing
 contact with the server while waiting all block it, and Claude is told why. What changed
@@ -283,7 +315,18 @@ from the Node hook:
 | Context for the reviewer | Command only | Also the session ID and working directory |
 
 The pattern lists are in `src/hook.rs`. They are a tripwire for common destructive
-commands, not a sandbox: a determined agent can find a command they do not match.
+commands, not a sandbox: a determined agent can find a command they do not match (a
+script it wrote itself, an interpreter such as `python -c`, `cd .claude && …`). The agent
+can also read `HCP_API_KEY` from its environment and call the API directly; that is why
+the server, not the hook, decides who may answer a request and where it is posted. If the
+agent must not run anything unreviewed, use `HCP_HOOK_MODE=gate_all`, whose read-only
+list is an allowlist.
+
+Protecting the hook's own files has the same limits. A command can change a file without
+naming it: `cargo install` replaces the binary, and `cd ~/.config/hcp && echo … > x.env`
+names only the folder. Keep the binary and env file somewhere the agent has no reason to
+work in (not inside a project, and not in a build output folder the hook runs from), and
+add any wrapper the hook command uses to `HCP_HOOK_PROTECTED_PATHS`.
 
 ## API keys and who can do what
 
@@ -298,7 +341,7 @@ Keys created by the TypeScript service keep working (same hashing, same table).
 | Key | Can |
 |-----|-----|
 | No scopes (an agent) | Submit requests; read, list, cancel and collect answers for its own requests; read its own audit events and event stream |
-| `respond` | Also answer requests through `POST /v1/requests/{id}/respond` |
+| `respond` | Also answer **any** request through `POST /v1/requests/{id}/respond`, under whatever `responded_by` name it gives. It is not bound to an agent or to `HCP_SLACK_RESPONDERS`, so treat it as an approver's credential: give it only to a console a person operates, never to an agent |
 | `admin` | Also read every agent's requests, audit events and event stream |
 
 ## Differences from the TypeScript service
@@ -315,20 +358,24 @@ Agents do not need to change. These behaviours are deliberately different:
 | Escalation notice | None | New Slack message; the old one is retired | The escalation responder was never told |
 | Routing | Two transitions fired without waiting | Sequential, and resumed after a crash | Requests could stick in `SUBMITTED` |
 | State change + audit event | Two separate writes | One transaction | A crash between them lost the audit record |
-| Idempotency key reuse by another agent | Returned the first agent's request | `409 Conflict` | Leaked requests across agents |
+| Idempotency key reuse by another agent | Returned the first agent's request | Keys are per agent: the other agent gets a request of its own | Leaked requests across agents, and one agent could take another's keys |
+| Who may answer in Slack | Anyone | The mapped responder; requests may not name unmapped responders or unlisted channels | An agent could choose its own approver |
+| Notifications | Waited for their deadline, then got the fallback (often `AUTO_APPROVE`) | `DELIVERED` once posted or logged | Every notification was later shown as "approved automatically" |
 | `/v1/events` | Open; filters ignored | Requires a key; filtered to the caller | Anyone could watch all activity |
 | Default `routing_hints.channel` | `portal` | `slack` | There is no portal |
 | Listen address | `0.0.0.0` | `127.0.0.1` | Not exposed to the network unless asked |
 | Database TLS | Certificate never verified | Follows `sslmode` in the URL | |
 | Agent text in Slack | Posted as-is | Escaped | A request could `@channel` or disguise links |
 
-One state-machine edge was added: `ROUTING → TIMED_OUT`, for a request that could never be
-delivered. And a request past its deadline is settled when its agent reads it, rather
+Two state-machine edges were added: `ROUTING → TIMED_OUT`, for a request that could never
+be delivered, and `ROUTING → DELIVERED`, for a notification once it is out. And a request past its deadline is settled when its agent reads it, rather
 than only on the next scheduler pass, so a waiting agent gets the outcome on its first
 poll after the deadline.
 
-Both servers can read the same database, but only this one feeds the vault, so do not run
-them side by side if the vault log is meant to be complete.
+This server upgrades a TypeScript-era database in place (schema version 3 makes idempotency
+keys unique per agent instead of globally). After that upgrade the TypeScript service can
+still read the database but can no longer create requests that carry an idempotency key,
+so do not run the two side by side. Only this server feeds the vault in any case.
 
 ## Development
 

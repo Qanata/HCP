@@ -95,7 +95,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let agent_side = matches!(cli.command, Command::Mcp | Command::Hook);
     let env_loaded = load_env(cli.env_file.as_ref(), !agent_side);
     if let Command::Hook = cli.command {
-        return Ok(hcp::hook::main(env_loaded.err().map(|err| format!("{err:#}"))));
+        return Ok(hcp::hook::main(env_loaded.err().map(|err| format!("{err:#}")), cli.env_file.as_deref()));
     }
     env_loaded?;
 

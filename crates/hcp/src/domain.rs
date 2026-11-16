@@ -116,15 +116,19 @@ impl Intent {
 }
 
 impl State {
-    /// The lifecycle graph. `ROUTING -> TIMED_OUT` is an addition over the original service:
-    /// it is how a request that could never be delivered to a human ends, instead of being
-    /// parked in `PENDING_RESPONSE` where an `AUTO_APPROVE` fallback could approve it unseen.
+    /// The lifecycle graph. Two edges are additions over the original service:
+    ///
+    /// - `ROUTING -> TIMED_OUT` is how a request that could never be delivered to a human
+    ///   ends, instead of being parked in `PENDING_RESPONSE` where an `AUTO_APPROVE` fallback
+    ///   could approve it unseen.
+    /// - `ROUTING -> DELIVERED` is how a notification ends once it is posted or logged. It
+    ///   waits on nobody, so it never enters `PENDING_RESPONSE` or meets its fallback.
     pub fn can_transition_to(self, to: State) -> bool {
         use State::*;
         matches!(
             (self, to),
             (Submitted, Routing | Cancelled)
-                | (Routing, PendingResponse | Escalated | TimedOut | Cancelled)
+                | (Routing, PendingResponse | Delivered | Escalated | TimedOut | Cancelled)
                 | (PendingResponse, Responded | Escalated | TimedOut | Cancelled)
                 | (Responded, Delivered)
                 | (Escalated, Routing | TimedOut | Cancelled)
