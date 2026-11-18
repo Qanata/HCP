@@ -13,6 +13,7 @@ pub mod health;
 pub mod hook;
 pub mod logging;
 pub mod mcp;
+pub mod presence;
 pub mod slack;
 pub mod store;
 pub mod vault;

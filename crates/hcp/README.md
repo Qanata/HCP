@@ -348,6 +348,7 @@ you approve it.
 | `HCP_HOOK_TIMEOUT` | `300` | Seconds a human has to answer; after that the command is rejected |
 | `HCP_HOOK_MODE` | `notify_and_gate` | `gate_only`: no notifications. `gate_all`: gate every Bash command that is not read-only |
 | `HCP_HOOK_ON_ERROR` | `block` | What happens to a gated command when approval cannot be requested at all. `allow` fails open |
+| `HCP_HOOK_WHEN_PRESENT` | `slack` | `terminal`: when you are at the Mac, ask a gated command in Claude Code's own permission prompt instead of Slack. See [At the Mac](#at-the-mac-ask-in-the-terminal) |
 | `HCP_HOOK_PROTECTED_PATHS` | unset | More files or folders the agent may not change without approval, separated by `:` like `PATH`. Absolute or `~/`; a folder protects everything in it. Use it for a wrapper script or anything else the hook command depends on |
 
 A gated command runs only if a person approved it. A rejection, a timeout, or losing
@@ -364,6 +365,36 @@ from the Node hook:
 | macOS equivalents (`diskutil erase…`, `launchctl bootout`, `> /dev/disk2`) | Not covered | Gated |
 | Result and stop details | Read from fields that do not exist | Read from `tool_response` and `last_assistant_message` |
 | Context for the reviewer | Command only | Also the session ID and working directory |
+
+#### At the Mac: ask in the terminal
+
+If the Mac running HCP is also where you work, Slack is a detour while you are sitting at
+it. Add `HCP_HOOK_WHEN_PRESENT=terminal` to the hook's env file (`claude-code.env`) and a
+gated command is asked in Claude Code's own permission prompt when all of these hold:
+
+- at least one display is on and awake (a switched-off monitor drops out of the display
+  list; a sleeping one reports itself asleep),
+- the screen is not locked,
+- the Claude Code session is interactive: it has a terminal and was not started with
+  `-p`/`--print`,
+- its permission mode prompts: `default`, `acceptEdits`, `plan` or `auto`. Not
+  `bypassPermissions` or `dontAsk`.
+
+Otherwise, or if any of it cannot be read, the request goes to Slack as before. The prompt
+says why it is being asked there, and a notification records "Asked in the terminal: …" in
+the vault; whether the command then ran shows in the `PostToolUse` notification.
+
+"Ask" cannot let a command run on its own. Claude Code shows the prompt even when an allow
+rule matches the command, and auto mode's classifier does not decide it. Where nobody can
+answer, Claude Code blocks the command: this was checked with `claude -p`, with an allow
+rule and with `--dangerously-skip-permissions`. What follows from that:
+
+- A prompt waits for you. If you walk away while one is showing, it does not move to Slack.
+- Other agents on the Mac (anything not using this hook and env file) still go to Slack.
+  So does an unattended `claude -p`, because it has no prompt to show.
+- Presence is a property of the Mac's screen, not of you. Working on the Mac over SSH with
+  the monitors off counts as away; an agent that wakes the displays (`caffeinate -u`) can
+  move its requests into a prompt nobody is watching, where they wait rather than run.
 
 The pattern lists are in `src/hook.rs`. They are a tripwire for common destructive
 commands, not a sandbox: a determined agent can find a command they do not match (a
@@ -520,6 +551,7 @@ src/
   client.rs              HTTP client used by the agent-side commands
   mcp.rs                 `hcp mcp`: the MCP tools
   hook.rs                `hcp hook`: command tiers and the approval gate
+  presence.rs            whether someone is at the Mac (displays, lock, session)
   app.rs                 wiring and lifecycle
   logging.rs             console and vault log setup
   config.rs              environment configuration

@@ -11,6 +11,10 @@
 //! permission flow; exit 2 blocks it and stderr is given to Claude as the reason. Exit 2 is
 //! only ever used for `PreToolUse` (on `Stop` it would mean "keep working").
 //!
+//! With `HCP_HOOK_WHEN_PRESENT=terminal`, a gated command is put to Claude Code's own
+//! permission prompt instead of Slack when the supervisor is at the Mac (see
+//! [`crate::presence`]): exit 0 with a `"permissionDecision": "ask"` on stdout.
+//!
 //! A gated command is blocked unless a human approved it. If HCP cannot be asked at all the
 //! command is blocked too, unless `HCP_HOOK_ON_ERROR=allow`. Claude Code itself lets a tool
 //! call through when a hook crashes or times out, so the settings entry should also set
@@ -54,6 +58,15 @@ pub enum Mode {
 pub enum OnError {
     Block,
     Allow,
+}
+
+/// Where a gated command is asked when the supervisor is at the Mac.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenPresent {
+    /// Always in Slack.
+    Slack,
+    /// In Claude Code's own permission prompt, when [`crate::presence`] finds someone there.
+    Terminal,
 }
 
 // ── Classifying Bash commands ───────────────────────────────────────────────
@@ -528,6 +541,7 @@ pub struct HookConfig {
     pub timeout_seconds: u64,
     pub mode: Mode,
     pub on_error: OnError,
+    pub when_present: WhenPresent,
 }
 
 impl HookConfig {
@@ -551,6 +565,14 @@ impl HookConfig {
             Some("allow") => OnError::Allow,
             _ => OnError::Block,
         };
+        let when_present = match get("HCP_HOOK_WHEN_PRESENT").as_deref() {
+            None | Some("slack") => WhenPresent::Slack,
+            Some("terminal") => WhenPresent::Terminal,
+            Some(other) => {
+                eprintln!("[hcp-hook] unknown HCP_HOOK_WHEN_PRESENT {other:?}; using slack");
+                WhenPresent::Slack
+            }
+        };
         let timeout_seconds =
             get("HCP_HOOK_TIMEOUT").and_then(|raw| raw.parse::<u64>().ok()).filter(|s| *s > 0).unwrap_or(300);
         let mut own = OwnFiles::new(lookup("HOME").as_deref());
@@ -559,7 +581,7 @@ impl HookConfig {
                 own.protect(&path.to_string_lossy());
             }
         }
-        Self { env: AgentEnv::from_lookup(&lookup), own, timeout_seconds, mode, on_error }
+        Self { env: AgentEnv::from_lookup(&lookup), own, timeout_seconds, mode, on_error, when_present }
     }
 }
 
@@ -568,6 +590,42 @@ impl HookConfig {
 pub enum Verdict {
     Allow,
     Deny(String),
+    /// Leave the decision to Claude Code's own permission prompt, with this explanation.
+    /// Never lets the command run by itself: where nobody can answer, Claude Code blocks it.
+    Ask(String),
+}
+
+/// The JSON a `PreToolUse` hook prints to have Claude Code ask the user.
+pub fn ask_output(reason: &str) -> Value {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": reason,
+        }
+    })
+}
+
+/// Whether a gated command from this event can be asked in the terminal instead of Slack:
+/// `Err` says why not. Cheap checks first; reading the process tree and the screen runs only
+/// if they pass.
+fn ask_here(
+    event: &Value,
+    session: impl FnOnce() -> Option<crate::presence::Session>,
+    screen: impl FnOnce() -> crate::presence::Screen,
+) -> Result<(), String> {
+    let mode = event.get("permission_mode").and_then(Value::as_str);
+    if !crate::presence::mode_prompts(mode) {
+        return Err(format!("permission mode {} does not prompt", mode.unwrap_or_default()));
+    }
+    if !session().is_some_and(|session| session.can_prompt()) {
+        return Err("the Claude Code session is not interactive".to_string());
+    }
+    let screen = screen();
+    if !screen.someone_is_here() {
+        return Err(screen.away_reason().to_string());
+    }
+    Ok(())
 }
 
 /// Where the request came from, attached to everything the hook sends.
@@ -707,6 +765,24 @@ pub async fn carry_out(plan: Plan, event: &Value, config: &HookConfig) -> Verdic
         config.env.api_key.as_deref().ok_or_else(|| "HCP_API_KEY is not set".to_string()).and_then(|key| {
             HcpClient::new(&config.env.base_url, key, Duration::from_secs(10)).map_err(|e| e.to_string())
         });
+    if let Plan::Gate { summary, .. } = &plan
+        && config.when_present == WhenPresent::Terminal
+    {
+        match ask_here(event, crate::presence::session, crate::presence::screen) {
+            Ok(()) => {
+                // Recorded, so the vault still shows the command was put to a person. Whether
+                // it ran shows up in the PostToolUse notification.
+                if let Ok(client) = &client {
+                    let metadata = json!({ "source": "claude-code-hook", "asked_in": "terminal" });
+                    notify(client, config, event, format!("Asked in the terminal: {summary}"), metadata).await;
+                }
+                return Verdict::Ask(format!(
+                    "HCP: you are at the Mac, so this is asked here instead of in Slack. {summary}"
+                ));
+            }
+            Err(why) => eprintln!("[hcp-hook] asking in Slack: {why}"),
+        }
+    }
     match (plan, client) {
         (Plan::Notify { summary, metadata }, Ok(client)) => {
             notify(&client, config, event, summary, metadata).await;
@@ -749,13 +825,7 @@ pub fn main(setup_error: Option<String>, env_file: Option<&Path>) -> ExitCode {
 
     if let Some(why) = setup_error {
         eprintln!("[hcp-hook] {why}");
-        return match if gating { unavailable(&config, &why) } else { Verdict::Allow } {
-            Verdict::Allow => ExitCode::SUCCESS,
-            Verdict::Deny(reason) => {
-                eprintln!("{reason}");
-                ExitCode::from(2)
-            }
-        };
+        return exit_with(if gating { unavailable(&config, &why) } else { Verdict::Allow });
     }
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -770,11 +840,21 @@ pub fn main(setup_error: Option<String>, env_file: Option<&Path>) -> ExitCode {
         Err(_) if gating => unavailable(&config, "the hook crashed"),
         _ => Verdict::Allow,
     };
+    exit_with(verdict)
+}
+
+/// Exit 0 lets the call continue; exit 2 blocks it with the reason on stderr; "ask" is exit 0
+/// with JSON on stdout, which hands the decision to Claude Code's permission prompt.
+fn exit_with(verdict: Verdict) -> ExitCode {
     match verdict {
         Verdict::Allow => ExitCode::SUCCESS,
         Verdict::Deny(reason) => {
             eprintln!("{reason}");
             ExitCode::from(2)
+        }
+        Verdict::Ask(reason) => {
+            println!("{}", ask_output(&reason));
+            ExitCode::SUCCESS
         }
     }
 }
@@ -1235,5 +1315,49 @@ mod tests {
             cr.response_data = Some(json!({ "decision": "approved" }));
             assert!(denied(&cr), "{state}");
         }
+    }
+
+    #[test]
+    fn asking_in_the_terminal_is_opt_in() {
+        assert_eq!(config(&[]).when_present, WhenPresent::Slack);
+        assert_eq!(config(&[("HCP_HOOK_WHEN_PRESENT", "Terminal")]).when_present, WhenPresent::Terminal);
+        assert_eq!(config(&[("HCP_HOOK_WHEN_PRESENT", "nonsense")]).when_present, WhenPresent::Slack);
+    }
+
+    #[test]
+    fn a_gate_is_asked_in_the_terminal_only_when_someone_is_there_to_answer() {
+        use crate::presence::{Screen, Session};
+        let here = || Screen { awake_displays: Some(2), locked: Some(false), on_console: Some(true) };
+        let interactive = || Some(Session { has_terminal: true, print_mode: false });
+        let event = |mode: &str| json!({ "hook_event_name": "PreToolUse", "permission_mode": mode });
+
+        for mode in ["default", "acceptEdits", "plan", "auto"] {
+            assert_eq!(ask_here(&event(mode), interactive, here), Ok(()), "{mode}");
+        }
+        // Without a person who can answer, Slack.
+        let away = || Screen { awake_displays: Some(0), ..here() };
+        assert_eq!(ask_here(&event("default"), interactive, away), Err("no display is on".to_string()));
+        let locked = || Screen { locked: Some(true), ..here() };
+        assert_eq!(ask_here(&event("default"), interactive, locked), Err("the screen is locked".to_string()));
+        assert!(ask_here(&event("default"), || Some(Session { has_terminal: true, print_mode: true }), here).is_err());
+        assert!(ask_here(&event("default"), || None, here).is_err());
+        assert!(ask_here(&event("bypassPermissions"), interactive, here).is_err());
+        assert!(ask_here(&event("dontAsk"), interactive, here).is_err());
+
+        // The expensive checks are skipped once a cheap one has failed.
+        let never_session = || -> Option<Session> { panic!("session read for a mode that cannot prompt") };
+        let never_screen = || -> Screen { panic!("screen read for a session that cannot prompt") };
+        assert!(ask_here(&event("bypassPermissions"), never_session, never_screen).is_err());
+        assert!(ask_here(&event("default"), || None, never_screen).is_err());
+    }
+
+    #[test]
+    fn asking_uses_the_documented_hook_output() {
+        assert_eq!(
+            ask_output("why"),
+            json!({ "hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "why",
+            } })
+        );
     }
 }
